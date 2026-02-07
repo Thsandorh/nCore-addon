@@ -1,1 +1,11 @@
-
+{
+  "name": "ncore-addon-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js",
+    "test": "node --test"
+  }
+}
