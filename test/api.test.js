@@ -29,6 +29,16 @@ function request(server, path, options = {}) {
   });
 }
 
+
+test('root endpoint serves configure page', async () => {
+  const app = createApp({ configureHtml: '<h1>root ok</h1>' });
+  const server = await start(app);
+  const res = await request(server, '/');
+  assert.equal(res.status, 200);
+  assert.match(res.body, /root ok/);
+  server.close();
+});
+
 test('configure endpoint works', async () => {
   const app = createApp({ configureHtml: '<h1>ok</h1>' });
   const server = await start(app);

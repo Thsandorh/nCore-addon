@@ -42,7 +42,7 @@ function createApp(deps = {}) {
   return async function app(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-    if (req.method === 'GET' && url.pathname === '/configure') {
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/configure')) {
       if (configureHtml) return html(res, 200, configureHtml);
       return html(res, 500, 'Missing configure.html');
     }
