@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>nCore addon konfiguráció</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
+    form { display: grid; gap: 12px; }
+    input { padding: 10px; font-size: 16px; }
+    button { padding: 10px 14px; font-size: 16px; cursor: pointer; }
+    .result { margin-top: 18px; padding: 12px; background: #f3f3f3; border-radius: 8px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>nCore Stremio addon (web)</h1>
+  <p>Add meg az nCore felhasználóneved és jelszavad. A rendszer készít egy személyes manifest URL-t.</p>
+
+  <form id="config-form">
+    <input id="username" name="username" type="text" placeholder="Felhasználónév" required />
+    <input id="password" name="password" type="password" placeholder="Jelszó" required />
+    <button type="submit">Manifest generálása</button>
+  </form>
+
+  <div class="result" id="result" hidden>
+    <div><strong>Manifest URL:</strong></div>
+    <div id="manifest-url"></div>
+    <div style="margin-top:10px"><a id="install-link" href="#">Telepítés Stremio-ban</a></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('config-form');
+    const result = document.getElementById('result');
+    const manifestUrlEl = document.getElementById('manifest-url');
+    const installLink = document.getElementById('install-link');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const body = new URLSearchParams(formData);
+
+      const response = await fetch('/api/config-token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || 'Hiba történt');
+        return;
+      }
+
+      const manifestUrl = `${location.origin}/${data.token}/manifest.json`;
+      manifestUrlEl.textContent = manifestUrl;
+      installLink.href = `stremio://${manifestUrl.replace(/^https?:\/\//, '')}`;
+      result.hidden = false;
+    });
+  </script>
+</body>
+</html>
