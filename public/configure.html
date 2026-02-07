@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="hu">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>nCore addon konfiguráció</title>
+  <title>nCore addon configuration</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
     form { display: grid; gap: 12px; }
@@ -14,18 +14,18 @@
 </head>
 <body>
   <h1>nCore Stremio addon (web)</h1>
-  <p>Add meg az nCore felhasználóneved és jelszavad. A rendszer készít egy személyes manifest URL-t.</p>
+  <p>Enter your nCore username and password. The page will generate your personal manifest URL.</p>
 
   <form id="config-form">
-    <input id="username" name="username" type="text" placeholder="Felhasználónév" required />
-    <input id="password" name="password" type="password" placeholder="Jelszó" required />
-    <button type="submit">Manifest generálása</button>
+    <input id="username" name="username" type="text" placeholder="Username" required />
+    <input id="password" name="password" type="password" placeholder="Password" required />
+    <button type="submit">Generate manifest</button>
   </form>
 
   <div class="result" id="result" hidden>
     <div><strong>Manifest URL:</strong></div>
     <div id="manifest-url"></div>
-    <div style="margin-top:10px"><a id="install-link" href="#">Telepítés Stremio-ban</a></div>
+    <div style="margin-top:10px"><a id="install-link" href="#">Install in Stremio</a></div>
   </div>
 
   <script>
@@ -47,7 +47,7 @@
 
       const data = await response.json();
       if (!response.ok) {
-        alert(data.error || 'Hiba történt');
+        alert(data.error || 'Something went wrong');
         return;
       }
 
