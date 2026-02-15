@@ -3,61 +3,361 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>nCore addon configuration</title>
+  <title>nCore + TorBox Setup</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
-    form { display: grid; gap: 12px; }
-    input { padding: 10px; font-size: 16px; }
-    button { padding: 10px 14px; font-size: 16px; cursor: pointer; }
-    .result { margin-top: 18px; padding: 12px; background: #f3f3f3; border-radius: 8px; word-break: break-all; }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+    :root {
+      --bg: #0d1015;
+      --bg-soft: #171d26;
+      --card: rgba(18, 24, 33, 0.82);
+      --line: rgba(255, 255, 255, 0.14);
+      --text: #edf3fb;
+      --muted: #9db0c7;
+      --accent: #34d399;
+      --accent-2: #14b8a6;
+      --danger: #fda4af;
+      --shadow: 0 24px 60px rgba(4, 8, 18, 0.45);
+      --radius-lg: 22px;
+      --radius-md: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: 'Space Grotesk', sans-serif;
+      background:
+        radial-gradient(900px 480px at 10% -10%, rgba(52, 211, 153, 0.22), transparent 60%),
+        radial-gradient(700px 420px at 90% -20%, rgba(20, 184, 166, 0.24), transparent 58%),
+        linear-gradient(165deg, #0a0d12 0%, #0f141d 55%, #0a1119 100%);
+      padding: 28px 16px 36px;
+    }
+
+    .wrap {
+      width: min(980px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(155deg, rgba(34, 46, 63, 0.7), rgba(17, 23, 32, 0.7));
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(24px, 4.8vw, 38px);
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+      max-width: 75ch;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+      backdrop-filter: blur(6px);
+      box-shadow: var(--shadow);
+      padding: 20px;
+    }
+
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      letter-spacing: -0.01em;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .field:last-child { margin-bottom: 0; }
+
+    .label {
+      font-size: 13px;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: var(--radius-md);
+      padding: 13px 14px;
+      background: rgba(7, 11, 16, 0.7);
+      color: var(--text);
+      font-size: 16px;
+      outline: none;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+    }
+
+    input::placeholder { color: #7f91a8; }
+    input:focus {
+      border-color: rgba(52, 211, 153, 0.75);
+      box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.16);
+      transform: translateY(-1px);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .btn {
+      border: 1px solid transparent;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 0.15s ease, filter 0.2s ease, border-color 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+
+    .btn:active { transform: translateY(1px); }
+
+    .btn-primary {
+      color: #032018;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      min-width: 170px;
+    }
+
+    .btn-primary:hover { filter: brightness(1.06); }
+
+    .btn-ghost {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-ghost:hover { border-color: rgba(255, 255, 255, 0.38); }
+
+    .helper {
+      margin: 10px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .status {
+      margin-top: 12px;
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status.error { color: var(--danger); }
+    .status.ok { color: #86efac; }
+
+    .manifest {
+      margin-top: 14px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(8, 12, 18, 0.8);
+      padding: 12px;
+      word-break: break-all;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #d5e3f6;
+    }
+
+    .steps {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      display: grid;
+      gap: 8px;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    @media (min-width: 880px) {
+      .grid {
+        grid-template-columns: 1.1fr 0.9fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      body { padding: 16px 12px 24px; }
+      .hero, .card { padding: 16px; }
+      .actions .btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
-  <h1>nCore Stremio addon (web)</h1>
-  <p>Enter your nCore username and password. The page will generate your personal manifest URL.</p>
+  <main class="wrap">
+    <section class="hero">
+      <h1 class="title">nCore + TorBox for Stremio</h1>
+      <p class="subtitle">
+        Add meg az nCore adatokat és a TorBox API kulcsot, majd telepítsd a személyes manifest URL-t.
+        A generált URL csak a te beállításoddal fog működni.
+      </p>
+    </section>
 
-  <form id="config-form">
-    <input id="username" name="username" type="text" placeholder="Username" required />
-    <input id="password" name="password" type="password" placeholder="Password" required />
-    <button type="submit">Generate manifest</button>
-  </form>
+    <section class="grid">
+      <article class="card">
+        <h2>Beállítás</h2>
+        <form id="config-form" novalidate>
+          <div class="field">
+            <label class="label" for="username">nCore Username</label>
+            <input id="username" name="username" type="text" placeholder="pl. sandor555" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label class="label" for="password">nCore Password</label>
+            <input id="password" name="password" type="password" placeholder="nCore jelszó" autocomplete="current-password" required />
+          </div>
+          <div class="field">
+            <label class="label" for="torboxApiKey">TorBox API Key</label>
+            <input id="torboxApiKey" name="torboxApiKey" type="password" placeholder="tb_..." autocomplete="off" required />
+          </div>
 
-  <div class="result" id="result" hidden>
-    <div><strong>Manifest URL:</strong></div>
-    <div id="manifest-url"></div>
-    <div style="margin-top:10px"><a id="install-link" href="#">Install in Stremio</a></div>
-  </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="generate-btn" type="submit">Manifest Generálás</button>
+            <button class="btn btn-ghost" id="clear-btn" type="button">Mezők Törlése</button>
+          </div>
+          <p class="helper">A kulcsokat nem mentjük adatbázisba, tokenbe kódolva mennek a személyes manifest URL-be.</p>
+          <div class="status" id="status"></div>
+        </form>
+
+        <div class="manifest" id="manifest-box" hidden>
+          <strong>Manifest URL</strong>
+          <div id="manifest-url"></div>
+          <div class="actions" style="margin-top: 12px;">
+            <a class="btn btn-primary" id="install-link" href="#" target="_self" rel="noopener">Install in Stremio</a>
+            <a class="btn btn-ghost" id="open-link" href="#" target="_blank" rel="noopener">Manifest Megnyitása</a>
+            <button class="btn btn-ghost" id="copy-btn" type="button">Másolás</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Használat</h2>
+        <ol class="steps">
+          <li>Töltsd ki az adatokat és generáld a manifestet.</li>
+          <li>Nyomj az <strong>Install in Stremio</strong> gombra.</li>
+          <li>Ha frissítesz szervert, addon reinstall javasolt (cache miatt).</li>
+          <li>Ha nincs stream: ellenőrizd a TorBox API kulcsot és az nCore bejelentkezést.</li>
+        </ol>
+      </article>
+    </section>
+  </main>
 
   <script>
     const form = document.getElementById('config-form');
-    const result = document.getElementById('result');
+    const statusEl = document.getElementById('status');
+    const manifestBox = document.getElementById('manifest-box');
     const manifestUrlEl = document.getElementById('manifest-url');
     const installLink = document.getElementById('install-link');
-    const basePath = location.pathname
-      .replace(/\/configure\/?$/, '')
-      .replace(/\/$/, '');
+    const openLink = document.getElementById('open-link');
+    const copyBtn = document.getElementById('copy-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    const generateBtn = document.getElementById('generate-btn');
+
+    const basePath = location.pathname.replace(/\/configure\/?$/, '').replace(/\/$/, '');
+    let latestManifestUrl = '';
+
+    function setStatus(message, kind) {
+      statusEl.textContent = message || '';
+      statusEl.className = `status${kind ? ` ${kind}` : ''}`;
+    }
+
+    function setLoading(loading) {
+      generateBtn.disabled = loading;
+      generateBtn.textContent = loading ? 'Generálás...' : 'Manifest Generálás';
+    }
+
+    function buildInstallUrl(manifestUrl) {
+      return `stremio://${manifestUrl.replace(/^https?:\/\//, '')}`;
+    }
+
+    async function copyManifest() {
+      if (!latestManifestUrl) return;
+      try {
+        await navigator.clipboard.writeText(latestManifestUrl);
+        setStatus('Manifest URL a vágólapra másolva.', 'ok');
+      } catch {
+        setStatus('Másolás sikertelen. Jelöld ki kézzel a linket.', 'error');
+      }
+    }
+
+    clearBtn.addEventListener('click', () => {
+      form.reset();
+      manifestBox.hidden = true;
+      latestManifestUrl = '';
+      setStatus('');
+    });
+
+    copyBtn.addEventListener('click', copyManifest);
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+
       const formData = new FormData(form);
-      const body = new URLSearchParams(formData);
+      const username = String(formData.get('username') || '').trim();
+      const password = String(formData.get('password') || '').trim();
+      const torboxApiKey = String(formData.get('torboxApiKey') || '').trim();
 
-      const response = await fetch(`${basePath}/api/config-token`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body,
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        alert(data.error || 'Something went wrong');
+      if (!username || !password || !torboxApiKey) {
+        setStatus('Minden mező kötelező.', 'error');
         return;
       }
 
-      const manifestUrl = `${location.origin}${basePath}/${data.token}/manifest.json`;
-      manifestUrlEl.textContent = manifestUrl;
-      installLink.href = `stremio://${manifestUrl.replace(/^https?:\/\//, '')}`;
-      result.hidden = false;
+      setLoading(true);
+      setStatus('Manifest generálása folyamatban...');
+
+      try {
+        const body = new URLSearchParams({ username, password, torboxApiKey });
+        const response = await fetch(`${basePath}/api/config-token`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body,
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Manifest generálás sikertelen.');
+        }
+
+        latestManifestUrl = `${location.origin}${basePath}/${data.token}/manifest.json`;
+        manifestUrlEl.textContent = latestManifestUrl;
+        installLink.href = buildInstallUrl(latestManifestUrl);
+        openLink.href = latestManifestUrl;
+        manifestBox.hidden = false;
+        setStatus('Kész. Telepítheted az addont Stremióba.', 'ok');
+      } catch (error) {
+        setStatus(error.message || 'Ismeretlen hiba történt.', 'error');
+      } finally {
+        setLoading(false);
+      }
     });
   </script>
 </body>

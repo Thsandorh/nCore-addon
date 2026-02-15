@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { encodeConfig, decodeConfig } = require('../lib/config');
 const { loginAndSearch } = require('../lib/ncore-client');
+const { resolveTorboxLink } = require('../lib/torbox-client');
 
 const manifestTemplate = {
   id: 'community.ncore.web',
@@ -118,8 +119,9 @@ function createApp(deps = {}) {
       const params = new URLSearchParams(raw);
       const username = params.get('username') || '';
       const password = params.get('password') || '';
+      const torboxApiKey = params.get('torboxApiKey') || '';
       try {
-        const token = encodeConfig({ username, password });
+        const token = encodeConfig({ username, password, torboxApiKey });
         return json(res, 200, { token });
       } catch (error) {
         return json(res, 400, { error: error.message });
@@ -152,43 +154,51 @@ function createApp(deps = {}) {
 
       try {
         const creds = decodeConfig(token);
+        if (!creds.torboxApiKey) {
+          return json(res, 200, { streams: [] });
+        }
+
         const results = await searchClient({ username: creds.username, password: creds.password, query: imdbId });
 
-        const streams = results
-          .map((item) => {
-            const magnet = normalizeMagnet(item.magnet);
-            const infoHash = String(item.infoHash || extractInfoHashFromMagnet(magnet) || '').toLowerCase();
-            if (!/^[a-f0-9]{40}$/.test(infoHash)) return null;
+        const streams = [];
+        for (const item of results.slice(0, 6)) {
+          const magnet = normalizeMagnet(item.magnet);
+          const infoHash = String(item.infoHash || extractInfoHashFromMagnet(magnet) || '').toLowerCase();
+          if (!magnet || !/^[a-f0-9]{40}$/.test(infoHash)) continue;
+
+          try {
+            const resolved = await resolveTorboxLink({
+              apiKey: creds.torboxApiKey,
+              magnet,
+              infoHash,
+              fileName: item.fileName,
+            });
+            if (!resolved || !resolved.url) continue;
 
             const quality = inferQualityFromTitle(item.title);
             const category = toReadableCategory(item.category);
             const size = formatSize(item.sizeBytes);
-
             const line1 = [`S:${Number(item.seeders) || 0}`, size || '', category || '', item.freeleech ? 'Freeleech' : '']
               .filter(Boolean)
               .join(' | ');
-            const line2 = [item.imdbRating ? `IMDb ${item.imdbRating}` : '', 'nCore']
+            const line2 = [item.imdbRating ? `IMDb ${item.imdbRating}` : '', 'nCore + TorBox']
               .filter(Boolean)
               .join(' | ');
-            const descriptionLines = [item.title, line1, line2].filter(Boolean);
 
             const stream = {
-              name: quality ? `nCore\n${quality}` : 'nCore',
-              title: descriptionLines.join('\n'),
-              infoHash,
+              name: quality ? `nCore\nTorBox ${quality}` : 'nCore\nTorBox',
+              title: [item.title, line1, line2].filter(Boolean).join('\n'),
+              url: resolved.url,
+              behaviorHints: { notWebReady: false },
             };
-
-            if (magnet) {
-              stream.sources = [magnet];
+            if (Array.isArray(resolved.subtitles) && resolved.subtitles.length > 0) {
+              stream.subtitles = resolved.subtitles;
             }
-
-            if (Number.isInteger(item.fileIdx) && item.fileIdx >= 0) {
-              stream.fileIdx = item.fileIdx;
-            }
-
-            return stream;
-          })
-          .filter(Boolean);
+            streams.push(stream);
+          } catch {
+            // Ignore failed TorBox resolutions and continue with next result.
+          }
+        }
 
         return json(res, 200, { streams });
       } catch (error) {
