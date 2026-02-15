@@ -51,7 +51,10 @@ test('configure endpoint works', async () => {
 test('stream endpoint returns streams with mock client', async () => {
   const app = createApp({
     configureHtml: 'ok',
-    searchClient: async () => ([{ title: 'Movie', magnet: 'magnet:?xt=urn:btih:abc123&dn=x' }]),
+    searchClient: async () => ([{
+      title: 'Movie',
+      magnet: 'magnet:?xt=urn:btih:abc123def456&dn=x&tr=https%3A%2F%2Fncore.pro%2Fannounce.php%3Fpasskey%3Dtest123',
+    }]),
   });
   const server = await start(app);
 
@@ -67,6 +70,32 @@ test('stream endpoint returns streams with mock client', async () => {
 
   assert.equal(streamRes.status, 200);
   assert.equal(parsed.streams.length, 1);
+  assert.equal(parsed.streams[0].infoHash, 'abc123def456');
+  assert.deepEqual(parsed.streams[0].sources, ['tracker:https://ncore.pro/announce.php?passkey=test123']);
+  server.close();
+});
+
+test('stream endpoint uses dht fallback when no trackers in magnet', async () => {
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      title: 'Movie',
+      magnet: 'magnet:?xt=urn:btih:abc123&dn=x',
+    }]),
+  });
+  const server = await start(app);
+
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p',
+  });
+
+  const token = JSON.parse(tokenRes.body).token;
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const parsed = JSON.parse(streamRes.body);
+
   assert.equal(parsed.streams[0].infoHash, 'abc123');
+  assert.deepEqual(parsed.streams[0].sources, ['dht:abc123']);
   server.close();
 });

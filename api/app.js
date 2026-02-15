@@ -84,12 +84,24 @@ function createApp(deps = {}) {
         const results = await searchClient({ username: creds.username, password: creds.password, query: imdbId });
 
         return json(res, 200, {
-          streams: results.map((item) => ({
-            title: item.title,
-            name: 'nCore',
-            infoHash: item.magnet.match(/btih:([^&]+)/i)?.[1],
-            sources: [item.magnet],
-          })),
+          streams: results.map((item) => {
+            const infoHash = item.magnet.match(/btih:([a-fA-F0-9]+)/i)?.[1]?.toLowerCase();
+            const sources = [];
+            const trackerRegex = /[&?]tr=([^&]+)/gi;
+            let trMatch;
+            while ((trMatch = trackerRegex.exec(item.magnet)) !== null) {
+              sources.push('tracker:' + decodeURIComponent(trMatch[1]));
+            }
+            if (sources.length === 0) {
+              sources.push('dht:' + infoHash);
+            }
+            return {
+              title: item.title,
+              name: 'nCore',
+              infoHash,
+              sources,
+            };
+          }),
         });
       } catch (error) {
         return json(res, 200, { streams: [], error: error.message });
