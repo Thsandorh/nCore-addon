@@ -25,8 +25,10 @@ const setupManifest = {
 };
 
 const RESOLVE_CACHE_TTL_MS = 1000 * 60 * 20;
+const STREAM_SELECTION_TTL_MS = 1000 * 60 * 90;
 const resolveCache = new Map();
 const resolveInFlight = new Map();
+const streamSelectionCache = new Map();
 
 function pruneResolveCache() {
   const now = Date.now();
@@ -35,6 +37,27 @@ function pruneResolveCache() {
       resolveCache.delete(key);
     }
   }
+
+  for (const [key, value] of streamSelectionCache.entries()) {
+    if (!value || value.expiresAt <= now) {
+      streamSelectionCache.delete(key);
+    }
+  }
+}
+
+function createStreamSelection({ token, item, parsedId }) {
+  const selectionKey = crypto.randomBytes(9).toString('base64url');
+  streamSelectionCache.set(selectionKey, {
+    token,
+    torrentId: String(item.id || '').trim(),
+    magnet: normalizeMagnet(item.magnet),
+    infoHash: String(item.infoHash || '').toLowerCase(),
+    fileName: item.fileName,
+    season: parsedId.season,
+    episode: parsedId.episode,
+    expiresAt: Date.now() + STREAM_SELECTION_TTL_MS,
+  });
+  return selectionKey;
 }
 
 function getRequestOrigin(req) {
@@ -222,12 +245,11 @@ function createApp(deps = {}) {
       return json(res, 200, { streams: [] });
     }
 
-    const resolveMatch = url.pathname.match(/^\/([^/]+)\/resolve\/([^/]+)\/([^/.]+)(?:\.[^/]+)?$/);
+    const resolveMatch = url.pathname.match(/^\/([^/]+)\/resolve\/([^/.]+)(?:\.[^/]+)?$/);
     if (req.method === 'GET' && resolveMatch) {
       const token = resolveMatch[1];
-      const encodedStreamId = resolveMatch[2];
-      const torrentId = String(resolveMatch[3] || '').trim();
-      const resolveKey = `${token}|${encodedStreamId}|${torrentId}`;
+      const selectionKey = resolveMatch[2];
+      const resolveKey = `${token}|${selectionKey}`;
 
       try {
         const creds = decodeConfig(token);
@@ -242,13 +264,16 @@ function createApp(deps = {}) {
           return res.end();
         }
 
-        const streamId = decodeURIComponent(encodedStreamId);
-        const parsedId = parseStreamId(streamId);
-        const items = await searchClient({ username: creds.username, password: creds.password, query: parsedId.raw });
-        const selected = items.find((item) => String(item.id || '') === torrentId);
-        if (!selected) {
-          return json(res, 404, { error: 'selected torrent not found' });
+        const selection = streamSelectionCache.get(selectionKey);
+        if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
+          return json(res, 404, { error: 'selected torrent not found or expired' });
         }
+
+        const selected = {
+          magnet: selection.magnet,
+          infoHash: selection.infoHash,
+          fileName: selection.fileName,
+        };
 
         const magnet = normalizeMagnet(selected.magnet);
         const infoHash = String(selected.infoHash || extractInfoHashFromMagnet(magnet) || '').toLowerCase();
@@ -263,8 +288,8 @@ function createApp(deps = {}) {
             magnet,
             infoHash,
             fileName: selected.fileName,
-            season: parsedId.season,
-            episode: parsedId.episode,
+            season: selection.season,
+            episode: selection.episode,
             includeSubtitles: false,
           });
           resolveInFlight.set(resolveKey, promise);
@@ -314,8 +339,7 @@ function createApp(deps = {}) {
           const magnet = normalizeMagnet(item.magnet);
           const infoHash = String(item.infoHash || extractInfoHashFromMagnet(magnet) || '').toLowerCase();
           if (!magnet || !infoHash) continue;
-          const torrentId = String(item.id || '').trim();
-          if (!torrentId) continue;
+          const selectionKey = createStreamSelection({ token, item, parsedId });
 
           const quality = inferQualityFromTitle(item.title);
           const category = toReadableCategory(item.category);
@@ -327,7 +351,7 @@ function createApp(deps = {}) {
             .filter(Boolean)
             .join(' | ');
 
-          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${encodeURIComponent(parsedId.raw)}/${torrentId}.mp4`;
+          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}.mp4`;
 
           streams.push({
             name: quality ? `nCore\nTorBox ${quality}` : 'nCore\nTorBox',
@@ -348,5 +372,4 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate };
-
 

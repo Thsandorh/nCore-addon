@@ -21,14 +21,13 @@ function request(server, path, options = {}) {
     }, (res) => {
       let body = '';
       res.on('data', (d) => body += d);
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+      res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
     });
     req.on('error', reject);
     if (options.body) req.write(options.body);
     req.end();
   });
 }
-
 
 test('root endpoint serves configure page', async () => {
   const app = createApp({ configureHtml: '<h1>root ok</h1>' });
@@ -48,17 +47,26 @@ test('configure endpoint works', async () => {
   server.close();
 });
 
-test('stream endpoint returns streams with mock client', async () => {
+test('stream endpoint returns resolve URL with selection cache key', async () => {
+  const infoHash = '0123456789abcdef0123456789abcdef01234567';
   const app = createApp({
     configureHtml: 'ok',
-    searchClient: async () => ([{ title: 'Movie', magnet: 'magnet:?xt=urn:btih:abc123&dn=x' }]),
+    searchClient: async () => ([{
+      id: '42',
+      title: 'Movie 1080p',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=x`,
+      infoHash,
+      seeders: 10,
+      sizeBytes: 1024,
+      category: 'xvid',
+    }]),
   });
   const server = await start(app);
 
   const tokenRes = await request(server, '/api/config-token', {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: 'username=u&password=p',
+    body: 'username=u&password=p&torboxApiKey=tb_key',
   });
 
   const token = JSON.parse(tokenRes.body).token;
@@ -67,6 +75,27 @@ test('stream endpoint returns streams with mock client', async () => {
 
   assert.equal(streamRes.status, 200);
   assert.equal(parsed.streams.length, 1);
-  assert.equal(parsed.streams[0].infoHash, 'abc123');
+  assert.match(parsed.streams[0].url, new RegExp(`/${token}/resolve/`));
+
+  server.close();
+});
+
+test('resolve endpoint with unknown key fails with 404', async () => {
+  const app = createApp({ configureHtml: 'ok', searchClient: async () => [] });
+  const server = await start(app);
+
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const resolveRes = await request(server, `/${token}/resolve/not-found.mp4`);
+  const payload = JSON.parse(resolveRes.body);
+
+  assert.equal(resolveRes.status, 404);
+  assert.match(payload.error, /not found/i);
+
   server.close();
 });

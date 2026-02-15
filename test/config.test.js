@@ -3,9 +3,9 @@ const assert = require('node:assert/strict');
 const { encodeConfig, decodeConfig } = require('../lib/config');
 
 test('encode/decode config roundtrip', () => {
-  const token = encodeConfig({ username: 'alice', password: 'secret' });
+  const token = encodeConfig({ username: 'alice', password: 'secret', torboxApiKey: 'tb_123' });
   const decoded = decodeConfig(token);
-  assert.deepEqual(decoded, { username: 'alice', password: 'secret' });
+  assert.deepEqual(decoded, { username: 'alice', password: 'secret', torboxApiKey: 'tb_123' });
 });
 
 test('decode invalid token throws', () => {
