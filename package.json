@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
-  "main": "api/index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node api/index.js",
+    "start": "node server.js",
     "test": "node --test"
+  },
+  "engines": {
+    "node": ">=14"
   }
 }
