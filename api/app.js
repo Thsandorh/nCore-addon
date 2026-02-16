@@ -32,10 +32,8 @@ const setupManifest = {
   types: [],
 };
 
-const RESOLVE_CACHE_TTL_MS = 1000 * 60 * 20;
 const STREAM_SELECTION_TTL_MS = 1000 * 60 * 90;
 const TORBOX_MYLIST_TTL_MS = 1000 * 15;
-const resolveCache = new Map();
 const resolveInFlight = new Map();
 const streamSelectionCache = new Map();
 const torboxMyListCache = new Map(); // apiKeyHash -> { expiresAt, torrents }
@@ -49,12 +47,6 @@ function withTimeout(promise, ms) {
 
 function pruneResolveCache() {
   const now = Date.now();
-  for (const [key, value] of resolveCache.entries()) {
-    if (!value || value.expiresAt <= now) {
-      resolveCache.delete(key);
-    }
-  }
-
   for (const [key, value] of streamSelectionCache.entries()) {
     if (!value || value.expiresAt <= now) {
       streamSelectionCache.delete(key);
@@ -299,13 +291,6 @@ function createApp(deps = {}) {
           return json(res, 400, { error: 'missing torbox api key' });
         }
 
-        const cached = resolveCache.get(resolveKey);
-        if (cached && cached.expiresAt > Date.now() && cached.url) {
-          res.statusCode = 302;
-          res.setHeader('location', cached.url);
-          return res.end();
-        }
-
         const selection = streamSelectionCache.get(selectionKey);
         if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
           console.log(`[RESOLVE] Selection not found or expired`);
@@ -370,11 +355,6 @@ function createApp(deps = {}) {
           console.log(`[RESOLVE] Failed to resolve torbox url`);
           return json(res, 502, { error: 'failed to resolve torbox url' });
         }
-
-        resolveCache.set(resolveKey, {
-          url: resolved.url,
-          expiresAt: Date.now() + RESOLVE_CACHE_TTL_MS,
-        });
 
         console.log(`[RESOLVE] Redirecting to video URL (302)`);
         res.statusCode = 302;
@@ -502,4 +482,3 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate };
-

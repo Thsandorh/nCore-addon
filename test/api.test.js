@@ -99,3 +99,50 @@ test('resolve endpoint with unknown key fails with 404', async () => {
 
   server.close();
 });
+
+test('resolve endpoint does not reuse stale resolved URL cache between calls', async () => {
+  const infoHash = '89abcdef0123456789abcdef0123456789abcdef';
+  let resolveCallCount = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '77',
+      title: 'Movie 2160p',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=x`,
+      infoHash,
+      seeders: 20,
+      sizeBytes: 2048,
+      category: 'xvid',
+    }]),
+    torboxResolver: async () => {
+      resolveCallCount += 1;
+      return { url: `https://video.example/${resolveCallCount}` };
+    },
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+  });
+  const server = await start(app);
+
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const parsed = JSON.parse(streamRes.body);
+  assert.equal(parsed.streams.length, 1);
+
+  const resolvePath = new URL(parsed.streams[0].url).pathname;
+  const firstResolve = await request(server, resolvePath);
+  const secondResolve = await request(server, resolvePath);
+
+  assert.equal(firstResolve.status, 302);
+  assert.equal(secondResolve.status, 302);
+  assert.equal(firstResolve.headers.location, 'https://video.example/1');
+  assert.equal(secondResolve.headers.location, 'https://video.example/2');
+  assert.equal(resolveCallCount, 2);
+
+  server.close();
+});
