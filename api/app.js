@@ -66,6 +66,7 @@ function createStreamSelection({ token, item, parsedId, cached }) {
     magnet: normalizeMagnet(item.magnet),
     infoHash: String(item.infoHash || '').toLowerCase(),
     fileName: item.fileName,
+    title: sanitizeTitle(item.title),
     season: parsedId.season,
     episode: parsedId.episode,
     cached: cached === true ? true : (cached === false ? false : null),
@@ -136,6 +137,10 @@ function normalizeMagnet(value) {
   const magnet = String(value || '').trim();
   if (!/^magnet:\?/i.test(magnet)) return '';
   return magnet;
+}
+
+function sanitizeTitle(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
 function extractInfoHashFromMagnet(magnet) {
@@ -278,7 +283,7 @@ function createApp(deps = {}) {
     }
 
     const resolveMatch = url.pathname.match(/^\/([^/]+)\/resolve\/([^/.]+)(?:\.[^/]+)?$/);
-    if (req.method === 'GET' && resolveMatch) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && resolveMatch) {
       const token = resolveMatch[1];
       const selectionKey = resolveMatch[2];
       const resolveKey = `${token}|${selectionKey}`;
@@ -303,6 +308,7 @@ function createApp(deps = {}) {
           magnet: selection.magnet,
           infoHash: selection.infoHash,
           fileName: selection.fileName,
+          title: selection.title,
         };
 
         const magnet = normalizeMagnet(selected.magnet);
@@ -333,7 +339,9 @@ function createApp(deps = {}) {
             apiKey: creds.torboxApiKey,
             magnet,
             infoHash,
-            fileName: (selection.season && selection.episode) ? null : selected.fileName,
+            fileName: (selection.season && selection.episode)
+              ? null
+              : (selected.fileName || sanitizeTitle(selected.title)),
             season: selection.season,
             episode: selection.episode,
             includeSubtitles: false,
