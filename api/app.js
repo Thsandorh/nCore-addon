@@ -9,6 +9,7 @@ const {
   readTorboxState,
   readTorboxProgress,
   isTorboxReady,
+  ensureTorrentQueued,
   isTorboxQueueLimitError,
   readTorboxErrorCode,
 } = require('../lib/torbox-client');
@@ -179,6 +180,20 @@ function decodeSelectionPayload(value) {
   }
 }
 
+
+function splitSelectionToken(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { selectionKey: '', selectionPayload: '' };
+  const separatorIndex = raw.indexOf('_');
+  if (separatorIndex <= 0) {
+    return { selectionKey: raw, selectionPayload: '' };
+  }
+  return {
+    selectionKey: raw.slice(0, separatorIndex),
+    selectionPayload: raw.slice(separatorIndex + 1),
+  };
+}
+
 function extractInfoHashFromMagnet(magnet) {
   const value = String(magnet || '').trim();
   if (!value) return '';
@@ -264,6 +279,7 @@ function createApp(deps = {}) {
   const torboxCachedChecker = deps.torboxCachedChecker || checkCachedAvailability;
   const torboxMyListFetcher = deps.torboxMyListFetcher || listMyTorrents;
   const torboxResolver = deps.torboxResolver || resolveTorboxLinkWithWait;
+  const torboxEnqueuer = deps.torboxEnqueuer || ensureTorrentQueued;
 
   return async function app(req, res) {
     pruneResolveCache();
@@ -321,8 +337,8 @@ function createApp(deps = {}) {
     const resolveMatch = url.pathname.match(/^\/([^/]+)\/resolve\/([^/.]+)(?:\.[^/]+)?$/);
     if ((req.method === 'GET' || req.method === 'HEAD') && resolveMatch) {
       const token = resolveMatch[1];
-      const selectionKey = resolveMatch[2];
-      const resolveKey = `${token}|${selectionKey}`;
+      const rawSelectionToken = resolveMatch[2];
+      const { selectionKey, selectionPayload: inlineSelectionPayload } = splitSelectionToken(rawSelectionToken);
 
       console.log(`[RESOLVE] Request for selectionKey: ${selectionKey}`);
 
@@ -334,7 +350,7 @@ function createApp(deps = {}) {
 
         let selection = streamSelectionCache.get(selectionKey);
         if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
-          const fallbackSelection = decodeSelectionPayload(url.searchParams.get('s'));
+          const fallbackSelection = decodeSelectionPayload(inlineSelectionPayload || url.searchParams.get('s'));
           if (fallbackSelection && fallbackSelection.expiresAt > Date.now() && fallbackSelection.token === token) {
             selection = fallbackSelection;
             streamSelectionCache.set(selectionKey, selection);
@@ -361,8 +377,9 @@ function createApp(deps = {}) {
         if (!magnet || !infoHash) {
           return json(res, 422, { error: 'selected torrent has no usable magnet/infohash' });
         }
+        const resolveKey = `${token}:${selectionKey}`;
 
-        // Refresh cached state at resolve time (Stremio caches stream lists).
+        // Determine current cached status right before action.
         let isCached = selection.cached;
         try {
           const cachedMap = await withTimeout(
@@ -374,9 +391,37 @@ function createApp(deps = {}) {
           // ignore
         }
 
-        let maxWaitMs = 600_000; // 10 min default
-        if (isCached === true) maxWaitMs = 30_000;
-        if (isCached === false) maxWaitMs = 600_000;
+        // Uncached: strictly queue into TorBox, do not attempt playback resolve.
+        if (isCached !== true) {
+          await withTimeout(
+            torboxEnqueuer({
+              apiKey: creds.torboxApiKey,
+              magnet,
+              name: (selection.season && selection.episode)
+                ? null
+                : (selected.fileName || sanitizeTitle(selected.title)),
+            }),
+            8000,
+          );
+
+          if (req.method === 'HEAD') {
+            res.statusCode = 204;
+            return res.end();
+          }
+
+          return json(res, 202, {
+            queued: true,
+            cached: false,
+            infoHash,
+            message: 'Torrent queued in TorBox',
+          });
+        }
+
+        // Cached: keep playback behavior and redirect to resolved media URL.
+        if (req.method === 'HEAD') {
+          res.statusCode = 204;
+          return res.end();
+        }
 
         let promise = resolveInFlight.get(resolveKey);
         if (!promise) {
@@ -390,26 +435,23 @@ function createApp(deps = {}) {
             season: selection.season,
             episode: selection.episode,
             includeSubtitles: false,
-            maxWaitMs,
+            maxWaitMs: 30_000,
+            skipCreate: true,
           });
           resolveInFlight.set(resolveKey, promise);
         }
 
         let resolved;
         try {
-          console.log(`[RESOLVE] Calling TorBox resolver... (cached: ${isCached}, maxWait: ${maxWaitMs}ms)`);
           resolved = await promise;
-          console.log(`[RESOLVE] TorBox resolver success: ${resolved?.url ? 'Got URL' : 'No URL'}`);
         } finally {
           resolveInFlight.delete(resolveKey);
         }
 
         if (!resolved || !resolved.url) {
-          console.log(`[RESOLVE] Failed to resolve torbox url`);
           return json(res, 502, { error: 'failed to resolve torbox url' });
         }
 
-        console.log(`[RESOLVE] Redirecting to video URL (302)`);
         res.statusCode = 302;
         res.setHeader('location', resolved.url);
         return res.end();
@@ -514,7 +556,7 @@ function createApp(deps = {}) {
             .filter(Boolean)
             .join(' | ');
 
-          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}?s=${encodeURIComponent(selectionPayload)}`;
+          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}_${selectionPayload}`;
           const cacheTag = own && !own.ready
             ? `[${String(own.state || 'processing').toUpperCase()}${Number.isFinite(own.progress) ? ` ${Math.round(own.progress)}%` : ''}]`
             : (cached === true ? '[CACHED]' : (cached === false ? '[UNCACHED]' : '[UNKNOWN]'));

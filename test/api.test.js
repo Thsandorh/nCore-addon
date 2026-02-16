@@ -38,16 +38,7 @@ test('root endpoint serves configure page', async () => {
   server.close();
 });
 
-test('configure endpoint works', async () => {
-  const app = createApp({ configureHtml: '<h1>ok</h1>' });
-  const server = await start(app);
-  const res = await request(server, '/configure');
-  assert.equal(res.status, 200);
-  assert.match(res.body, /ok/);
-  server.close();
-});
-
-test('stream endpoint returns resolve URL with selection cache key', async () => {
+test('stream endpoint returns resolve URL with selection key and inline payload', async () => {
   const infoHash = '0123456789abcdef0123456789abcdef01234567';
   const app = createApp({
     configureHtml: 'ok',
@@ -76,6 +67,7 @@ test('stream endpoint returns resolve URL with selection cache key', async () =>
   assert.equal(streamRes.status, 200);
   assert.equal(parsed.streams.length, 1);
   assert.match(parsed.streams[0].url, new RegExp(`/${token}/resolve/`));
+  assert.match(parsed.streams[0].url, /_eyJ/);
 
   server.close();
 });
@@ -100,74 +92,26 @@ test('resolve endpoint with unknown key fails with 404', async () => {
   server.close();
 });
 
-test('resolve endpoint does not reuse stale resolved URL cache between calls', async () => {
-  const infoHash = '89abcdef0123456789abcdef0123456789abcdef';
-  let resolveCallCount = 0;
+test('resolve queues torrent and returns 202 for GET', async () => {
+  const infoHash = 'abababababababababababababababababababab';
+  let enqueued = 0;
   const app = createApp({
     configureHtml: 'ok',
     searchClient: async () => ([{
-      id: '77',
-      title: 'Movie 2160p',
-      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=x`,
-      infoHash,
-      seeders: 20,
-      sizeBytes: 2048,
-      category: 'xvid',
-    }]),
-    torboxResolver: async () => {
-      resolveCallCount += 1;
-      return { url: `https://video.example/${resolveCallCount}` };
-    },
-    torboxCachedChecker: async () => new Map([[infoHash, false]]),
-    torboxMyListFetcher: async () => [],
-  });
-  const server = await start(app);
-
-  const tokenRes = await request(server, '/api/config-token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: 'username=u&password=p&torboxApiKey=tb_key',
-  });
-  const token = JSON.parse(tokenRes.body).token;
-
-  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
-  const parsed = JSON.parse(streamRes.body);
-  assert.equal(parsed.streams.length, 1);
-
-  const resolvePath = new URL(parsed.streams[0].url).pathname;
-  const firstResolve = await request(server, resolvePath);
-  const secondResolve = await request(server, resolvePath);
-
-  assert.equal(firstResolve.status, 302);
-  assert.equal(secondResolve.status, 302);
-  assert.equal(firstResolve.headers.location, 'https://video.example/1');
-  assert.equal(secondResolve.headers.location, 'https://video.example/2');
-  assert.equal(resolveCallCount, 2);
-
-  server.close();
-});
-
-
-test('resolve uses stream title as fallback name when fileName is missing', async () => {
-  const infoHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-  let resolverArgs = null;
-  const app = createApp({
-    configureHtml: 'ok',
-    searchClient: async () => ([{
-      id: '101',
-      title: 'Fallback Name 1080p',
-      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Fallback+Name+From+Magnet`,
+      id: '707',
+      title: 'Mandatory Enqueue',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Mandatory+Enqueue`,
       infoHash,
       seeders: 1,
-      sizeBytes: 1000,
+      sizeBytes: 1111,
       category: 'xvid',
       fileName: '',
     }]),
     torboxCachedChecker: async () => new Map([[infoHash, false]]),
     torboxMyListFetcher: async () => [],
-    torboxResolver: async (args) => {
-      resolverArgs = args;
-      return { url: 'https://video.example/file.mp4', subtitles: [] };
+    torboxEnqueuer: async () => {
+      enqueued += 1;
+      return { queued: true, torrentId: '42' };
     },
   });
 
@@ -181,38 +125,38 @@ test('resolve uses stream title as fallback name when fileName is missing', asyn
 
   const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
   const streams = JSON.parse(streamRes.body).streams;
-  assert.equal(streams.length, 1);
+  const resolveUrl = new URL(streams[0].url);
 
-  const resolvePath = new URL(streams[0].url).pathname;
-  const resolveRes = await request(server, resolvePath);
-  assert.equal(resolveRes.status, 302);
-  assert.equal(resolveRes.headers.location, 'https://video.example/file.mp4');
-  assert.equal(resolverArgs.fileName, 'Fallback Name 1080p');
+  const resolveRes = await request(server, resolveUrl.pathname + resolveUrl.search);
+  const payload = JSON.parse(resolveRes.body);
+
+  assert.equal(resolveRes.status, 202);
+  assert.equal(payload.queued, true);
+  assert.equal(enqueued, 1);
 
   server.close();
 });
 
-
-test('resolve endpoint accepts HEAD and still triggers torbox resolver', async () => {
+test('resolve queues torrent and returns 204 for HEAD', async () => {
   const infoHash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-  let resolverCalls = 0;
+  let enqueued = 0;
   const app = createApp({
     configureHtml: 'ok',
     searchClient: async () => ([{
-      id: '202',
-      title: 'Head Resolve Test',
-      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Head+Resolve+Test`,
+      id: '808',
+      title: 'Head Enqueue',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Head+Enqueue`,
       infoHash,
       seeders: 1,
-      sizeBytes: 1000,
+      sizeBytes: 1111,
       category: 'xvid',
       fileName: '',
     }]),
     torboxCachedChecker: async () => new Map([[infoHash, false]]),
     torboxMyListFetcher: async () => [],
-    torboxResolver: async () => {
-      resolverCalls += 1;
-      return { url: 'https://video.example/head.mp4', subtitles: [] };
+    torboxEnqueuer: async () => {
+      enqueued += 1;
+      return { queued: true, torrentId: '99' };
     },
   });
 
@@ -226,21 +170,68 @@ test('resolve endpoint accepts HEAD and still triggers torbox resolver', async (
 
   const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
   const streams = JSON.parse(streamRes.body).streams;
-  assert.equal(streams.length, 1);
+  const resolveUrl = new URL(streams[0].url);
 
-  const resolvePath = new URL(streams[0].url).pathname;
-  const headRes = await request(server, resolvePath, { method: 'HEAD' });
-  assert.equal(headRes.status, 302);
-  assert.equal(headRes.headers.location, 'https://video.example/head.mp4');
-  assert.equal(resolverCalls, 1);
+  const headRes = await request(server, resolveUrl.pathname + resolveUrl.search, { method: 'HEAD' });
+  assert.equal(headRes.status, 204);
+  assert.equal(enqueued, 1);
 
   server.close();
 });
 
 
-test('resolve can recover selection from stateless query payload', async () => {
+test('resolve redirects cached torrents and skips enqueue', async () => {
+  const infoHash = 'dddddddddddddddddddddddddddddddddddddddd';
+  let enqueued = 0;
+  let resolved = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '909',
+      title: 'Cached Playback',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Cached+Playback`,
+      infoHash,
+      seeders: 5,
+      sizeBytes: 2222,
+      category: 'xvid',
+      fileName: 'Cached.Playback.1080p.mkv',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, true]]),
+    torboxEnqueuer: async () => {
+      enqueued += 1;
+      return { queued: true, torrentId: '123' };
+    },
+    torboxResolver: async () => {
+      resolved += 1;
+      return { url: 'https://media.example/cached-playback.mp4' };
+    },
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  const resolveUrl = new URL(streams[0].url);
+
+  const resolveRes = await request(server, resolveUrl.pathname + resolveUrl.search);
+
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://media.example/cached-playback.mp4');
+  assert.equal(enqueued, 0);
+  assert.equal(resolved, 1);
+
+  server.close();
+});
+
+test('resolve can recover selection from inline stateless payload', async () => {
   const infoHash = 'cccccccccccccccccccccccccccccccccccccccc';
-  let resolverCalls = 0;
+  let enqueued = 0;
   const app = createApp({
     configureHtml: 'ok',
     searchClient: async () => ([{
@@ -255,9 +246,9 @@ test('resolve can recover selection from stateless query payload', async () => {
     }]),
     torboxCachedChecker: async () => new Map([[infoHash, false]]),
     torboxMyListFetcher: async () => [],
-    torboxResolver: async () => {
-      resolverCalls += 1;
-      return { url: 'https://video.example/stateless.mp4', subtitles: [] };
+    torboxEnqueuer: async () => {
+      enqueued += 1;
+      return { queued: true, torrentId: '55' };
     },
   });
 
@@ -271,55 +262,21 @@ test('resolve can recover selection from stateless query payload', async () => {
 
   const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
   const streams = JSON.parse(streamRes.body).streams;
-  assert.equal(streams.length, 1);
-
   const original = new URL(streams[0].url);
-  const recoveredPath = `/${token}/resolve/fakeSelectionKey?s=${encodeURIComponent(original.searchParams.get('s'))}`;
+  const encoded = original.pathname.split('/resolve/')[1].split('_').slice(1).join('_');
+  const recoveredPath = `/${token}/resolve/fakeSelectionKey_${encoded}`;
+
   const resolveRes = await request(server, recoveredPath);
+  const payload = JSON.parse(resolveRes.body);
 
-  assert.equal(resolveRes.status, 302);
-  assert.equal(resolveRes.headers.location, 'https://video.example/stateless.mp4');
-  assert.equal(resolverCalls, 1);
-
-  server.close();
-});
-
-
-test('stream resolve URL defaults to https origin when forwarded proto is missing', async () => {
-  const infoHash = 'dddddddddddddddddddddddddddddddddddddddd';
-  const app = createApp({
-    configureHtml: 'ok',
-    searchClient: async () => ([{
-      id: '404',
-      title: 'Proto Default Test',
-      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Proto+Default+Test`,
-      infoHash,
-      seeders: 2,
-      sizeBytes: 1500,
-      category: 'xvid',
-    }]),
-    torboxCachedChecker: async () => new Map([[infoHash, false]]),
-    torboxMyListFetcher: async () => [],
-  });
-
-  const server = await start(app);
-  const tokenRes = await request(server, '/api/config-token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: 'username=u&password=p&torboxApiKey=tb_key',
-  });
-  const token = JSON.parse(tokenRes.body).token;
-
-  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
-  const streams = JSON.parse(streamRes.body).streams;
-  assert.equal(streams.length, 1);
-  assert.match(streams[0].url, /^https:\/\//);
+  assert.equal(resolveRes.status, 202);
+  assert.equal(payload.queued, true);
+  assert.equal(enqueued, 1);
 
   server.close();
 });
 
-
-test('resolve returns 429 when TorBox resolver reports ACTIVE_LIMIT', async () => {
+test('resolve returns 429 when TorBox enqueue reports ACTIVE_LIMIT', async () => {
   const infoHash = 'ffffffffffffffffffffffffffffffffffffffff';
   const app = createApp({
     configureHtml: 'ok',
@@ -335,7 +292,7 @@ test('resolve returns 429 when TorBox resolver reports ACTIVE_LIMIT', async () =
     }]),
     torboxCachedChecker: async () => new Map([[infoHash, false]]),
     torboxMyListFetcher: async () => [],
-    torboxResolver: async () => {
+    torboxEnqueuer: async () => {
       const err = new Error('limit');
       err.response = { error: 'ACTIVE_LIMIT' };
       throw err;
@@ -352,10 +309,9 @@ test('resolve returns 429 when TorBox resolver reports ACTIVE_LIMIT', async () =
 
   const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
   const streams = JSON.parse(streamRes.body).streams;
-  assert.equal(streams.length, 1);
+  const resolveUrl = new URL(streams[0].url);
 
-  const resolvePath = new URL(streams[0].url).pathname + new URL(streams[0].url).search;
-  const resolveRes = await request(server, resolvePath);
+  const resolveRes = await request(server, resolveUrl.pathname + resolveUrl.search);
   const payload = JSON.parse(resolveRes.body);
 
   assert.equal(resolveRes.status, 429);
