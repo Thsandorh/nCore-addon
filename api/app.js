@@ -9,7 +9,6 @@ const {
   readTorboxState,
   readTorboxProgress,
   isTorboxReady,
-  ensureTorrentQueued,
   isTorboxQueueLimitError,
   readTorboxErrorCode,
 } = require('../lib/torbox-client');
@@ -379,45 +378,7 @@ function createApp(deps = {}) {
         }
         const resolveKey = `${token}:${selectionKey}`;
 
-        // Determine current cached status right before action.
-        let isCached = selection.cached;
-        try {
-          const cachedMap = await withTimeout(
-            torboxCachedChecker({ apiKey: creds.torboxApiKey, infoHashes: [infoHash] }),
-            1500,
-          );
-          if (cachedMap.has(infoHash)) isCached = Boolean(cachedMap.get(infoHash));
-        } catch {
-          // ignore
-        }
-
-        // Uncached: strictly queue into TorBox, do not attempt playback resolve.
-        if (isCached !== true) {
-          await withTimeout(
-            torboxEnqueuer({
-              apiKey: creds.torboxApiKey,
-              magnet,
-              name: (selection.season && selection.episode)
-                ? null
-                : (selected.fileName || sanitizeTitle(selected.title)),
-            }),
-            8000,
-          );
-
-          if (req.method === 'HEAD') {
-            res.statusCode = 204;
-            return res.end();
-          }
-
-          return json(res, 202, {
-            queued: true,
-            cached: false,
-            infoHash,
-            message: 'Torrent queued in TorBox',
-          });
-        }
-
-        // Cached: keep playback behavior and redirect to resolved media URL.
+        // Always resolve through TorBox playback flow (no queue-only response mode).
         if (req.method === 'HEAD') {
           res.statusCode = 204;
           return res.end();
@@ -434,9 +395,7 @@ function createApp(deps = {}) {
               : (selected.fileName || sanitizeTitle(selected.title)),
             season: selection.season,
             episode: selection.episode,
-            includeSubtitles: false,
             maxWaitMs: 30_000,
-            skipCreate: true,
           });
           resolveInFlight.set(resolveKey, promise);
         }
