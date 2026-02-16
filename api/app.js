@@ -60,19 +60,20 @@ function pruneResolveCache() {
 
 function createStreamSelection({ token, item, parsedId, cached }) {
   const selectionKey = crypto.randomBytes(9).toString('base64url');
-  streamSelectionCache.set(selectionKey, {
+  const selection = {
     token,
     torrentId: String(item.id || '').trim(),
     magnet: normalizeMagnet(item.magnet),
     infoHash: String(item.infoHash || '').toLowerCase(),
-    fileName: item.fileName,
+    fileName: sanitizeTitle(item.fileName),
     title: sanitizeTitle(item.title),
     season: parsedId.season,
     episode: parsedId.episode,
     cached: cached === true ? true : (cached === false ? false : null),
     expiresAt: Date.now() + STREAM_SELECTION_TTL_MS,
-  });
-  return selectionKey;
+  };
+  streamSelectionCache.set(selectionKey, selection);
+  return { selectionKey, selectionPayload: encodeSelectionPayload(selection) };
 }
 
 function getRequestOrigin(req) {
@@ -141,6 +142,33 @@ function normalizeMagnet(value) {
 
 function sanitizeTitle(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function encodeSelectionPayload(selection) {
+  const input = selection && typeof selection === 'object' ? selection : {};
+  return Buffer.from(JSON.stringify(input), 'utf8').toString('base64url');
+}
+
+function decodeSelectionPayload(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      token: String(parsed.token || ''),
+      magnet: normalizeMagnet(parsed.magnet),
+      infoHash: String(parsed.infoHash || '').toLowerCase(),
+      fileName: sanitizeTitle(parsed.fileName),
+      title: sanitizeTitle(parsed.title),
+      season: Number.isInteger(parsed.season) && parsed.season > 0 ? parsed.season : null,
+      episode: Number.isInteger(parsed.episode) && parsed.episode > 0 ? parsed.episode : null,
+      cached: parsed.cached === true ? true : (parsed.cached === false ? false : null),
+      expiresAt: Number(parsed.expiresAt) || 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function extractInfoHashFromMagnet(magnet) {
@@ -296,7 +324,16 @@ function createApp(deps = {}) {
           return json(res, 400, { error: 'missing torbox api key' });
         }
 
-        const selection = streamSelectionCache.get(selectionKey);
+        let selection = streamSelectionCache.get(selectionKey);
+        if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
+          const fallbackSelection = decodeSelectionPayload(url.searchParams.get('s'));
+          if (fallbackSelection && fallbackSelection.expiresAt > Date.now() && fallbackSelection.token === token) {
+            selection = fallbackSelection;
+            streamSelectionCache.set(selectionKey, selection);
+            console.log('[RESOLVE] Selection recovered from stateless payload');
+          }
+        }
+
         if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
           console.log(`[RESOLVE] Selection not found or expired`);
           return json(res, 404, { error: 'selected torrent not found or expired' });
@@ -450,7 +487,7 @@ function createApp(deps = {}) {
           if (own && own.ready) cached = true;
           if (own && !own.ready) cached = false;
 
-          const selectionKey = createStreamSelection({ token, item, parsedId, cached });
+          const { selectionKey, selectionPayload } = createStreamSelection({ token, item, parsedId, cached });
 
           const quality = inferQualityFromTitle(item.title);
           const category = toReadableCategory(item.category);
@@ -465,7 +502,7 @@ function createApp(deps = {}) {
             .filter(Boolean)
             .join(' | ');
 
-          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}`;
+          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}?s=${encodeURIComponent(selectionPayload)}`;
           const cacheTag = own && !own.ready
             ? `[${String(own.state || 'processing').toUpperCase()}${Number.isFinite(own.progress) ? ` ${Math.round(own.progress)}%` : ''}]`
             : (cached === true ? '[CACHED]' : (cached === false ? '[UNCACHED]' : '[UNKNOWN]'));

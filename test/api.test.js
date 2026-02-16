@@ -236,3 +236,50 @@ test('resolve endpoint accepts HEAD and still triggers torbox resolver', async (
 
   server.close();
 });
+
+
+test('resolve can recover selection from stateless query payload', async () => {
+  const infoHash = 'cccccccccccccccccccccccccccccccccccccccc';
+  let resolverCalls = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '303',
+      title: 'Stateless Resolve Recovery',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Stateless+Resolve+Recovery`,
+      infoHash,
+      seeders: 4,
+      sizeBytes: 2000,
+      category: 'xvid',
+      fileName: '',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+    torboxResolver: async () => {
+      resolverCalls += 1;
+      return { url: 'https://video.example/stateless.mp4', subtitles: [] };
+    },
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+
+  const original = new URL(streams[0].url);
+  const recoveredPath = `/${token}/resolve/fakeSelectionKey?s=${encodeURIComponent(original.searchParams.get('s'))}`;
+  const resolveRes = await request(server, recoveredPath);
+
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://video.example/stateless.mp4');
+  assert.equal(resolverCalls, 1);
+
+  server.close();
+});
