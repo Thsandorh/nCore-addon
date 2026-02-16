@@ -99,3 +99,267 @@ test('resolve endpoint with unknown key fails with 404', async () => {
 
   server.close();
 });
+
+test('resolve endpoint does not reuse stale resolved URL cache between calls', async () => {
+  const infoHash = '89abcdef0123456789abcdef0123456789abcdef';
+  let resolveCallCount = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '77',
+      title: 'Movie 2160p',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=x`,
+      infoHash,
+      seeders: 20,
+      sizeBytes: 2048,
+      category: 'xvid',
+    }]),
+    torboxResolver: async () => {
+      resolveCallCount += 1;
+      return { url: `https://video.example/${resolveCallCount}` };
+    },
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+  });
+  const server = await start(app);
+
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const parsed = JSON.parse(streamRes.body);
+  assert.equal(parsed.streams.length, 1);
+
+  const resolvePath = new URL(parsed.streams[0].url).pathname;
+  const firstResolve = await request(server, resolvePath);
+  const secondResolve = await request(server, resolvePath);
+
+  assert.equal(firstResolve.status, 302);
+  assert.equal(secondResolve.status, 302);
+  assert.equal(firstResolve.headers.location, 'https://video.example/1');
+  assert.equal(secondResolve.headers.location, 'https://video.example/2');
+  assert.equal(resolveCallCount, 2);
+
+  server.close();
+});
+
+
+test('resolve uses stream title as fallback name when fileName is missing', async () => {
+  const infoHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  let resolverArgs = null;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '101',
+      title: 'Fallback Name 1080p',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Fallback+Name+From+Magnet`,
+      infoHash,
+      seeders: 1,
+      sizeBytes: 1000,
+      category: 'xvid',
+      fileName: '',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+    torboxResolver: async (args) => {
+      resolverArgs = args;
+      return { url: 'https://video.example/file.mp4', subtitles: [] };
+    },
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+
+  const resolvePath = new URL(streams[0].url).pathname;
+  const resolveRes = await request(server, resolvePath);
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://video.example/file.mp4');
+  assert.equal(resolverArgs.fileName, 'Fallback Name 1080p');
+
+  server.close();
+});
+
+
+test('resolve endpoint accepts HEAD and still triggers torbox resolver', async () => {
+  const infoHash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  let resolverCalls = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '202',
+      title: 'Head Resolve Test',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Head+Resolve+Test`,
+      infoHash,
+      seeders: 1,
+      sizeBytes: 1000,
+      category: 'xvid',
+      fileName: '',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+    torboxResolver: async () => {
+      resolverCalls += 1;
+      return { url: 'https://video.example/head.mp4', subtitles: [] };
+    },
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+
+  const resolvePath = new URL(streams[0].url).pathname;
+  const headRes = await request(server, resolvePath, { method: 'HEAD' });
+  assert.equal(headRes.status, 302);
+  assert.equal(headRes.headers.location, 'https://video.example/head.mp4');
+  assert.equal(resolverCalls, 1);
+
+  server.close();
+});
+
+
+test('resolve can recover selection from stateless query payload', async () => {
+  const infoHash = 'cccccccccccccccccccccccccccccccccccccccc';
+  let resolverCalls = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '303',
+      title: 'Stateless Resolve Recovery',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Stateless+Resolve+Recovery`,
+      infoHash,
+      seeders: 4,
+      sizeBytes: 2000,
+      category: 'xvid',
+      fileName: '',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+    torboxResolver: async () => {
+      resolverCalls += 1;
+      return { url: 'https://video.example/stateless.mp4', subtitles: [] };
+    },
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+
+  const original = new URL(streams[0].url);
+  const recoveredPath = `/${token}/resolve/fakeSelectionKey?s=${encodeURIComponent(original.searchParams.get('s'))}`;
+  const resolveRes = await request(server, recoveredPath);
+
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://video.example/stateless.mp4');
+  assert.equal(resolverCalls, 1);
+
+  server.close();
+});
+
+
+test('stream resolve URL defaults to https origin when forwarded proto is missing', async () => {
+  const infoHash = 'dddddddddddddddddddddddddddddddddddddddd';
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '404',
+      title: 'Proto Default Test',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Proto+Default+Test`,
+      infoHash,
+      seeders: 2,
+      sizeBytes: 1500,
+      category: 'xvid',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+  assert.match(streams[0].url, /^https:\/\//);
+
+  server.close();
+});
+
+
+test('resolve attempts immediate torbox enqueue before waiting for resolver', async () => {
+  const infoHash = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  let enqueueCalls = 0;
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '505',
+      title: 'Immediate Enqueue',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Immediate+Enqueue`,
+      infoHash,
+      seeders: 3,
+      sizeBytes: 1234,
+      category: 'xvid',
+      fileName: '',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+    torboxEnqueuer: async () => {
+      enqueueCalls += 1;
+      return { queued: true, torrentId: '1' };
+    },
+    torboxResolver: async () => ({ url: 'https://video.example/enqueued.mp4', subtitles: [] }),
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+
+  const resolvePath = new URL(streams[0].url).pathname + new URL(streams[0].url).search;
+  const resolveRes = await request(server, resolvePath);
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://video.example/enqueued.mp4');
+  assert.equal(enqueueCalls, 1);
+
+  server.close();
+});
