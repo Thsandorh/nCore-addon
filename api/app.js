@@ -278,15 +278,10 @@ function createApp(deps = {}) {
   const torboxCachedChecker = deps.torboxCachedChecker || checkCachedAvailability;
   const torboxMyListFetcher = deps.torboxMyListFetcher || listMyTorrents;
   const torboxResolver = deps.torboxResolver || resolveTorboxLinkWithWait;
-  const torboxEnqueuer = deps.torboxEnqueuer || ensureTorrentQueued;
 
   return async function app(req, res) {
     pruneResolveCache();
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    
-    // Log all requests
-    const timestamp = new Date().toISOString().substring(11, 19);
-    console.log(`[${timestamp}] ${req.method} ${url.pathname.substring(0, 100)}`);
 
     if (req.method === 'GET' && url.pathname === '/health') {
       return json(res, 200, {
@@ -339,8 +334,6 @@ function createApp(deps = {}) {
       const rawSelectionToken = resolveMatch[2];
       const { selectionKey, selectionPayload: inlineSelectionPayload } = splitSelectionToken(rawSelectionToken);
 
-      console.log(`[RESOLVE] Request for selectionKey: ${selectionKey}`);
-
       try {
         const creds = decodeConfig(token);
         if (!creds.torboxApiKey) {
@@ -353,16 +346,12 @@ function createApp(deps = {}) {
           if (fallbackSelection && fallbackSelection.expiresAt > Date.now() && fallbackSelection.token === token) {
             selection = fallbackSelection;
             streamSelectionCache.set(selectionKey, selection);
-            console.log('[RESOLVE] Selection recovered from stateless payload');
           }
         }
 
         if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
-          console.log(`[RESOLVE] Selection not found or expired`);
           return json(res, 404, { error: 'selected torrent not found or expired' });
         }
-
-        console.log(`[RESOLVE] Selection found: ${selection.fileName || 'N/A'}, infoHash: ${selection.infoHash.substring(0, 8)}...`);
 
         const selected = {
           magnet: selection.magnet,
@@ -415,7 +404,6 @@ function createApp(deps = {}) {
         res.setHeader('location', resolved.url);
         return res.end();
       } catch (error) {
-        console.log(`[RESOLVE] Error: ${error.message}, code: ${error.code || 'N/A'}`);
         if (error && error.code === 'TORBOX_NOT_READY') {
           res.setHeader('retry-after', '10');
           return json(res, 409, { error: error.message || 'TorBox not ready' });

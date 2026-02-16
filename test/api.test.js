@@ -92,9 +92,9 @@ test('resolve endpoint with unknown key fails with 404', async () => {
   server.close();
 });
 
-test('resolve queues torrent and returns 202 for GET', async () => {
+test('resolve redirects to TorBox media URL for GET', async () => {
   const infoHash = 'abababababababababababababababababababab';
-  let enqueued = 0;
+  let resolved = 0;
   const app = createApp({
     configureHtml: 'ok',
     searchClient: async () => ([{
@@ -107,11 +107,9 @@ test('resolve queues torrent and returns 202 for GET', async () => {
       category: 'xvid',
       fileName: '',
     }]),
-    torboxCachedChecker: async () => new Map([[infoHash, false]]),
-    torboxMyListFetcher: async () => [],
-    torboxEnqueuer: async () => {
-      enqueued += 1;
-      return { queued: true, torrentId: '42' };
+    torboxResolver: async () => {
+      resolved += 1;
+      return { url: 'https://media.example/enqueued-playback.mp4' };
     },
   });
 
@@ -128,18 +126,16 @@ test('resolve queues torrent and returns 202 for GET', async () => {
   const resolveUrl = new URL(streams[0].url);
 
   const resolveRes = await request(server, resolveUrl.pathname + resolveUrl.search);
-  const payload = JSON.parse(resolveRes.body);
-
-  assert.equal(resolveRes.status, 202);
-  assert.equal(payload.queued, true);
-  assert.equal(enqueued, 1);
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://media.example/enqueued-playback.mp4');
+  assert.equal(resolved, 1);
 
   server.close();
 });
 
-test('resolve queues torrent and returns 204 for HEAD', async () => {
+test('resolve returns 204 for HEAD without invoking resolver', async () => {
   const infoHash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-  let enqueued = 0;
+  let resolved = 0;
   const app = createApp({
     configureHtml: 'ok',
     searchClient: async () => ([{
@@ -152,11 +148,9 @@ test('resolve queues torrent and returns 204 for HEAD', async () => {
       category: 'xvid',
       fileName: '',
     }]),
-    torboxCachedChecker: async () => new Map([[infoHash, false]]),
-    torboxMyListFetcher: async () => [],
-    torboxEnqueuer: async () => {
-      enqueued += 1;
-      return { queued: true, torrentId: '99' };
+    torboxResolver: async () => {
+      resolved += 1;
+      return { url: 'https://media.example/head.mp4' };
     },
   });
 
@@ -174,7 +168,7 @@ test('resolve queues torrent and returns 204 for HEAD', async () => {
 
   const headRes = await request(server, resolveUrl.pathname + resolveUrl.search, { method: 'HEAD' });
   assert.equal(headRes.status, 204);
-  assert.equal(enqueued, 1);
+  assert.equal(resolved, 0);
 
   server.close();
 });
@@ -182,7 +176,6 @@ test('resolve queues torrent and returns 204 for HEAD', async () => {
 
 test('resolve redirects cached torrents and skips enqueue', async () => {
   const infoHash = 'dddddddddddddddddddddddddddddddddddddddd';
-  let enqueued = 0;
   let resolved = 0;
   const app = createApp({
     configureHtml: 'ok',
@@ -197,10 +190,6 @@ test('resolve redirects cached torrents and skips enqueue', async () => {
       fileName: 'Cached.Playback.1080p.mkv',
     }]),
     torboxCachedChecker: async () => new Map([[infoHash, true]]),
-    torboxEnqueuer: async () => {
-      enqueued += 1;
-      return { queued: true, torrentId: '123' };
-    },
     torboxResolver: async () => {
       resolved += 1;
       return { url: 'https://media.example/cached-playback.mp4' };
@@ -223,7 +212,6 @@ test('resolve redirects cached torrents and skips enqueue', async () => {
 
   assert.equal(resolveRes.status, 302);
   assert.equal(resolveRes.headers.location, 'https://media.example/cached-playback.mp4');
-  assert.equal(enqueued, 0);
   assert.equal(resolved, 1);
 
   server.close();
@@ -231,7 +219,7 @@ test('resolve redirects cached torrents and skips enqueue', async () => {
 
 test('resolve can recover selection from inline stateless payload', async () => {
   const infoHash = 'cccccccccccccccccccccccccccccccccccccccc';
-  let enqueued = 0;
+  let resolved = 0;
   const app = createApp({
     configureHtml: 'ok',
     searchClient: async () => ([{
@@ -244,11 +232,9 @@ test('resolve can recover selection from inline stateless payload', async () => 
       category: 'xvid',
       fileName: '',
     }]),
-    torboxCachedChecker: async () => new Map([[infoHash, false]]),
-    torboxMyListFetcher: async () => [],
-    torboxEnqueuer: async () => {
-      enqueued += 1;
-      return { queued: true, torrentId: '55' };
+    torboxResolver: async () => {
+      resolved += 1;
+      return { url: 'https://media.example/recovered.mp4' };
     },
   });
 
@@ -267,16 +253,14 @@ test('resolve can recover selection from inline stateless payload', async () => 
   const recoveredPath = `/${token}/resolve/fakeSelectionKey_${encoded}`;
 
   const resolveRes = await request(server, recoveredPath);
-  const payload = JSON.parse(resolveRes.body);
-
-  assert.equal(resolveRes.status, 202);
-  assert.equal(payload.queued, true);
-  assert.equal(enqueued, 1);
+  assert.equal(resolveRes.status, 302);
+  assert.equal(resolveRes.headers.location, 'https://media.example/recovered.mp4');
+  assert.equal(resolved, 1);
 
   server.close();
 });
 
-test('resolve returns 429 when TorBox enqueue reports ACTIVE_LIMIT', async () => {
+test('resolve returns 429 when TorBox resolve reports ACTIVE_LIMIT', async () => {
   const infoHash = 'ffffffffffffffffffffffffffffffffffffffff';
   const app = createApp({
     configureHtml: 'ok',
@@ -290,9 +274,7 @@ test('resolve returns 429 when TorBox enqueue reports ACTIVE_LIMIT', async () =>
       category: 'xvid',
       fileName: '',
     }]),
-    torboxCachedChecker: async () => new Map([[infoHash, false]]),
-    torboxMyListFetcher: async () => [],
-    torboxEnqueuer: async () => {
+    torboxResolver: async () => {
       const err = new Error('limit');
       err.response = { error: 'ACTIVE_LIMIT' };
       throw err;
