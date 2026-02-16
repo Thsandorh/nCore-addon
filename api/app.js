@@ -77,7 +77,13 @@ function createStreamSelection({ token, item, parsedId, cached }) {
 }
 
 function getRequestOrigin(req) {
-  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() || 'http';
+  const configuredOrigin = String(process.env.PUBLIC_APP_ORIGIN || '').trim();
+  if (configuredOrigin) {
+    return configuredOrigin.replace(/\/+$/g, '');
+  }
+
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const proto = forwardedProto || 'https';
   const host = req.headers.host || 'localhost';
   return `${proto}://${host}`;
 }

@@ -283,3 +283,37 @@ test('resolve can recover selection from stateless query payload', async () => {
 
   server.close();
 });
+
+
+test('stream resolve URL defaults to https origin when forwarded proto is missing', async () => {
+  const infoHash = 'dddddddddddddddddddddddddddddddddddddddd';
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '404',
+      title: 'Proto Default Test',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Proto+Default+Test`,
+      infoHash,
+      seeders: 2,
+      sizeBytes: 1500,
+      category: 'xvid',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+  assert.match(streams[0].url, /^https:\/\//);
+
+  server.close();
+});
