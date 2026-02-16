@@ -278,6 +278,7 @@ function createApp(deps = {}) {
   const torboxCachedChecker = deps.torboxCachedChecker || checkCachedAvailability;
   const torboxMyListFetcher = deps.torboxMyListFetcher || listMyTorrents;
   const torboxResolver = deps.torboxResolver || resolveTorboxLinkWithWait;
+  const torboxEnqueuer = deps.torboxEnqueuer || ensureTorrentQueued;
 
   return async function app(req, res) {
     pruneResolveCache();
