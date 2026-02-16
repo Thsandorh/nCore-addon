@@ -32,10 +32,8 @@ const setupManifest = {
   types: [],
 };
 
-const RESOLVE_CACHE_TTL_MS = 1000 * 60 * 20;
 const STREAM_SELECTION_TTL_MS = 1000 * 60 * 90;
 const TORBOX_MYLIST_TTL_MS = 1000 * 15;
-const resolveCache = new Map();
 const resolveInFlight = new Map();
 const streamSelectionCache = new Map();
 const torboxMyListCache = new Map(); // apiKeyHash -> { expiresAt, torrents }
@@ -49,12 +47,6 @@ function withTimeout(promise, ms) {
 
 function pruneResolveCache() {
   const now = Date.now();
-  for (const [key, value] of resolveCache.entries()) {
-    if (!value || value.expiresAt <= now) {
-      resolveCache.delete(key);
-    }
-  }
-
   for (const [key, value] of streamSelectionCache.entries()) {
     if (!value || value.expiresAt <= now) {
       streamSelectionCache.delete(key);
@@ -68,18 +60,20 @@ function pruneResolveCache() {
 
 function createStreamSelection({ token, item, parsedId, cached }) {
   const selectionKey = crypto.randomBytes(9).toString('base64url');
-  streamSelectionCache.set(selectionKey, {
+  const selection = {
     token,
     torrentId: String(item.id || '').trim(),
     magnet: normalizeMagnet(item.magnet),
     infoHash: String(item.infoHash || '').toLowerCase(),
-    fileName: item.fileName,
+    fileName: sanitizeTitle(item.fileName),
+    title: sanitizeTitle(item.title),
     season: parsedId.season,
     episode: parsedId.episode,
     cached: cached === true ? true : (cached === false ? false : null),
     expiresAt: Date.now() + STREAM_SELECTION_TTL_MS,
-  });
-  return selectionKey;
+  };
+  streamSelectionCache.set(selectionKey, selection);
+  return { selectionKey, selectionPayload: encodeSelectionPayload(selection) };
 }
 
 function getRequestOrigin(req) {
@@ -144,6 +138,37 @@ function normalizeMagnet(value) {
   const magnet = String(value || '').trim();
   if (!/^magnet:\?/i.test(magnet)) return '';
   return magnet;
+}
+
+function sanitizeTitle(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function encodeSelectionPayload(selection) {
+  const input = selection && typeof selection === 'object' ? selection : {};
+  return Buffer.from(JSON.stringify(input), 'utf8').toString('base64url');
+}
+
+function decodeSelectionPayload(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      token: String(parsed.token || ''),
+      magnet: normalizeMagnet(parsed.magnet),
+      infoHash: String(parsed.infoHash || '').toLowerCase(),
+      fileName: sanitizeTitle(parsed.fileName),
+      title: sanitizeTitle(parsed.title),
+      season: Number.isInteger(parsed.season) && parsed.season > 0 ? parsed.season : null,
+      episode: Number.isInteger(parsed.episode) && parsed.episode > 0 ? parsed.episode : null,
+      cached: parsed.cached === true ? true : (parsed.cached === false ? false : null),
+      expiresAt: Number(parsed.expiresAt) || 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function extractInfoHashFromMagnet(magnet) {
@@ -286,7 +311,7 @@ function createApp(deps = {}) {
     }
 
     const resolveMatch = url.pathname.match(/^\/([^/]+)\/resolve\/([^/.]+)(?:\.[^/]+)?$/);
-    if (req.method === 'GET' && resolveMatch) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && resolveMatch) {
       const token = resolveMatch[1];
       const selectionKey = resolveMatch[2];
       const resolveKey = `${token}|${selectionKey}`;
@@ -299,14 +324,16 @@ function createApp(deps = {}) {
           return json(res, 400, { error: 'missing torbox api key' });
         }
 
-        const cached = resolveCache.get(resolveKey);
-        if (cached && cached.expiresAt > Date.now() && cached.url) {
-          res.statusCode = 302;
-          res.setHeader('location', cached.url);
-          return res.end();
+        let selection = streamSelectionCache.get(selectionKey);
+        if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
+          const fallbackSelection = decodeSelectionPayload(url.searchParams.get('s'));
+          if (fallbackSelection && fallbackSelection.expiresAt > Date.now() && fallbackSelection.token === token) {
+            selection = fallbackSelection;
+            streamSelectionCache.set(selectionKey, selection);
+            console.log('[RESOLVE] Selection recovered from stateless payload');
+          }
         }
 
-        const selection = streamSelectionCache.get(selectionKey);
         if (!selection || selection.expiresAt <= Date.now() || selection.token !== token) {
           console.log(`[RESOLVE] Selection not found or expired`);
           return json(res, 404, { error: 'selected torrent not found or expired' });
@@ -318,6 +345,7 @@ function createApp(deps = {}) {
           magnet: selection.magnet,
           infoHash: selection.infoHash,
           fileName: selection.fileName,
+          title: selection.title,
         };
 
         const magnet = normalizeMagnet(selected.magnet);
@@ -348,7 +376,9 @@ function createApp(deps = {}) {
             apiKey: creds.torboxApiKey,
             magnet,
             infoHash,
-            fileName: (selection.season && selection.episode) ? null : selected.fileName,
+            fileName: (selection.season && selection.episode)
+              ? null
+              : (selected.fileName || sanitizeTitle(selected.title)),
             season: selection.season,
             episode: selection.episode,
             includeSubtitles: false,
@@ -370,11 +400,6 @@ function createApp(deps = {}) {
           console.log(`[RESOLVE] Failed to resolve torbox url`);
           return json(res, 502, { error: 'failed to resolve torbox url' });
         }
-
-        resolveCache.set(resolveKey, {
-          url: resolved.url,
-          expiresAt: Date.now() + RESOLVE_CACHE_TTL_MS,
-        });
 
         console.log(`[RESOLVE] Redirecting to video URL (302)`);
         res.statusCode = 302;
@@ -462,7 +487,7 @@ function createApp(deps = {}) {
           if (own && own.ready) cached = true;
           if (own && !own.ready) cached = false;
 
-          const selectionKey = createStreamSelection({ token, item, parsedId, cached });
+          const { selectionKey, selectionPayload } = createStreamSelection({ token, item, parsedId, cached });
 
           const quality = inferQualityFromTitle(item.title);
           const category = toReadableCategory(item.category);
@@ -477,7 +502,7 @@ function createApp(deps = {}) {
             .filter(Boolean)
             .join(' | ');
 
-          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}`;
+          const resolveUrl = `${origin}${appBasePath}/${token}/resolve/${selectionKey}?s=${encodeURIComponent(selectionPayload)}`;
           const cacheTag = own && !own.ready
             ? `[${String(own.state || 'processing').toUpperCase()}${Number.isFinite(own.progress) ? ` ${Math.round(own.progress)}%` : ''}]`
             : (cached === true ? '[CACHED]' : (cached === false ? '[UNCACHED]' : '[UNKNOWN]'));
@@ -502,4 +527,3 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate };
-
