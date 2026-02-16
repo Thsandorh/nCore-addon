@@ -317,3 +317,49 @@ test('stream resolve URL defaults to https origin when forwarded proto is missin
 
   server.close();
 });
+
+
+test('resolve returns 429 when TorBox resolver reports ACTIVE_LIMIT', async () => {
+  const infoHash = 'ffffffffffffffffffffffffffffffffffffffff';
+  const app = createApp({
+    configureHtml: 'ok',
+    searchClient: async () => ([{
+      id: '606',
+      title: 'Queue Limit Test',
+      magnet: `magnet:?xt=urn:btih:${infoHash}&dn=Queue+Limit+Test`,
+      infoHash,
+      seeders: 1,
+      sizeBytes: 999,
+      category: 'xvid',
+      fileName: '',
+    }]),
+    torboxCachedChecker: async () => new Map([[infoHash, false]]),
+    torboxMyListFetcher: async () => [],
+    torboxResolver: async () => {
+      const err = new Error('limit');
+      err.response = { error: 'ACTIVE_LIMIT' };
+      throw err;
+    },
+  });
+
+  const server = await start(app);
+  const tokenRes = await request(server, '/api/config-token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'username=u&password=p&torboxApiKey=tb_key',
+  });
+  const token = JSON.parse(tokenRes.body).token;
+
+  const streamRes = await request(server, `/${token}/stream/movie/tt12345.json`);
+  const streams = JSON.parse(streamRes.body).streams;
+  assert.equal(streams.length, 1);
+
+  const resolvePath = new URL(streams[0].url).pathname + new URL(streams[0].url).search;
+  const resolveRes = await request(server, resolvePath);
+  const payload = JSON.parse(resolveRes.body);
+
+  assert.equal(resolveRes.status, 429);
+  assert.match(payload.error, /queue limit/i);
+
+  server.close();
+});

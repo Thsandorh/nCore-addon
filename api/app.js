@@ -9,6 +9,8 @@ const {
   readTorboxState,
   readTorboxProgress,
   isTorboxReady,
+  isTorboxQueueLimitError,
+  readTorboxErrorCode,
 } = require('../lib/torbox-client');
 
 const manifestTemplate = {
@@ -356,9 +358,9 @@ function createApp(deps = {}) {
 
         const magnet = normalizeMagnet(selected.magnet);
         const infoHash = String(selected.infoHash || extractInfoHashFromMagnet(magnet) || '').toLowerCase();
-    if (!magnet || !infoHash) {
-      return json(res, 422, { error: 'selected torrent has no usable magnet/infohash' });
-    }
+        if (!magnet || !infoHash) {
+          return json(res, 422, { error: 'selected torrent has no usable magnet/infohash' });
+        }
 
         // Refresh cached state at resolve time (Stremio caches stream lists).
         let isCached = selection.cached;
@@ -416,6 +418,10 @@ function createApp(deps = {}) {
         if (error && error.code === 'TORBOX_NOT_READY') {
           res.setHeader('retry-after', '10');
           return json(res, 409, { error: error.message || 'TorBox not ready' });
+        }
+        if (isTorboxQueueLimitError(error)) {
+          const code = readTorboxErrorCode(error) || 'ACTIVE_LIMIT';
+          return json(res, 429, { error: `TorBox queue limit reached (${code})` });
         }
         return json(res, 502, { error: error.message || 'resolve failed' });
       }
