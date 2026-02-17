@@ -308,22 +308,21 @@ function createApp(deps = {}) {
           return sendJson(res, 422, { error: 'Invalid magnet or infoHash' });
         }
 
-        let cachedFlag = selection.cached;
         try {
           const map = await withTimeout(torboxCachedChecker({ apiKey: credentials.torboxApiKey, infoHashes: [infoHash] }), 1600);
-          if (map.has(infoHash)) cachedFlag = map.get(infoHash);
+          if (map.has(infoHash)) {
+            selection.cached = map.get(infoHash);
+          }
         } catch {
           // keep previous state
         }
 
-        if (cachedFlag === false) {
-          try {
-            await torboxAdder({ apiKey: credentials.torboxApiKey, magnet });
-          } catch {
-            // ignore, torrent may already be present
-          }
-          res.setHeader('retry-after', '60');
-          return sendJson(res, 409, { error: 'Torrent queued in TorBox. Try again later.' });
+        // Always do a best-effort queue add before resolve. This avoids getting
+        // stuck on stale cached=false state and handles torrents that just became available.
+        try {
+          await torboxAdder({ apiKey: credentials.torboxApiKey, magnet });
+        } catch {
+          // ignore, torrent may already be present in mylist
         }
 
         let inFlight = resolveInFlight.get(resolveKey);
