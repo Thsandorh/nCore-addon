@@ -6,7 +6,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node test\\api.test.js && node test\\config.test.js"
+  },
+  "dependencies": {
+    "undici": "^5.28.4"
   },
   "engines": {
     "node": ">=14"
