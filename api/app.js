@@ -1,11 +1,16 @@
-'use strict';
+﻿'use strict';
 
 const crypto = require('node:crypto');
 const { encodeConfig, decodeConfig } = require('../lib/config');
+let logInfo = (...args) => console.log(...args);
+let logError = (...args) => console.error(...args);
+try {
+  ({ logInfo, logError } = require('../lib/logger')); // optional in older deployments
+} catch {
+  // Fallback to console if logger module is not deployed yet.
+}
 const { loginAndSearch } = require('../lib/ncore-client');
-const {
-  addTorrent,
-  checkCached,
+const {  checkCached,
   getMyTorrents,
   resolveLink,
   infoHashFromMagnet,
@@ -34,23 +39,31 @@ const SETUP_MANIFEST = {
   ...MANIFEST,
   id: 'community.ncore.web.setup',
   name: 'nCore Web Addon (Setup)',
-  description: 'Nyisd meg a /configure oldalt a beállításhoz.',
+  description: 'Nyisd meg a /configure oldalt a beÄ‚Ë‡llÄ‚Â­tÄ‚Ë‡shoz.',
   resources: [],
   types: [],
 };
 
 // ---------------------------------------------------------------------------
-// Cache-ek (folyamat-szintű memória)
+// Cache-ek (folyamat-szintÄąÂ± memÄ‚Ĺ‚ria)
 // ---------------------------------------------------------------------------
 
-const resolveCache    = new Map(); // resolveKey  → { url, expiresAt }
-const resolveInFlight = new Map(); // resolveKey  → Promise<string>
-const selections      = new Map(); // selectionKey → adatok
-const myListCache     = new Map(); // apiKeyHash  → { list, expiresAt }
+const resolveCache    = new Map(); // resolveKey  Ă˘â€ â€™ { url, expiresAt }
+const resolveInFlight = new Map(); // resolveKey  Ă˘â€ â€™ Promise<string>
+const selections      = new Map(); // selectionKey Ă˘â€ â€™ adatok
+const myListCache     = new Map(); // apiKeyHash  Ă˘â€ â€™ { list, expiresAt }
 
 const RESOLVE_TTL   = 20 * 60 * 1000;
 const SELECTION_TTL = 90 * 60 * 1000;
 const MYLIST_TTL    =      15 * 1000;
+const ENABLE_STREAM_CACHE_PRECHECK = String(process.env.ENABLE_STREAM_CACHE_PRECHECK || "true").toLowerCase() === "true";
+const ENABLE_STREAM_MYLIST_PRECHECK = String(process.env.ENABLE_STREAM_MYLIST_PRECHECK || "").toLowerCase() === "true";
+const TORBOX_DEBUG = String(process.env.TORBOX_DEBUG || 'false').toLowerCase() === 'true';
+
+function debugErr(message, meta) {
+  if (!TORBOX_DEBUG) return;
+  logError(message, meta || {});
+}
 
 function pruneCache() {
   const now = Date.now();
@@ -60,7 +73,7 @@ function pruneCache() {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP segédek
+// HTTP segÄ‚Â©dek
 // ---------------------------------------------------------------------------
 
 function withTimeout(p, ms) {
@@ -88,7 +101,7 @@ async function readBody(req) {
 }
 
 // ---------------------------------------------------------------------------
-// Kis segédek
+// Kis segÄ‚Â©dek
 // ---------------------------------------------------------------------------
 
 function getOrigin(req) {
@@ -103,11 +116,17 @@ function parseBasePath(v) {
 }
 
 function parseStreamId(raw) {
-  const parts   = String(raw || '').split(':');
+  let decoded = String(raw || '');
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // keep original when malformed encoding
+  }
+  const parts   = decoded.split(':');
   const season  = Number(parts[1]);
   const episode = Number(parts[2]);
   return {
-    raw,
+    raw: decoded,
     imdbId:  parts[0] || '',
     season:  Number.isInteger(season)  && season  > 0 ? season  : null,
     episode: Number.isInteger(episode) && episode > 0 ? episode : null,
@@ -162,7 +181,6 @@ function createApp(deps = {}) {
   const _checkCached   = deps.torboxCachedChecker || checkCached;
   const _getMyTorrents = deps.torboxMyListFetcher  || getMyTorrents;
   const _resolveLink   = deps.torboxResolver       || resolveLink;
-  const _addTorrent    = deps.torboxAdder          || addTorrent;
   const configureHtml  = deps.configureHtml;
 
   return async function app(req, res) {
@@ -170,7 +188,7 @@ function createApp(deps = {}) {
 
     const url  = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const path = url.pathname;
-    console.log(`[${new Date().toISOString().slice(11, 19)}] ${req.method} ${path.slice(0, 120)}`);
+    logInfo(`[${new Date().toISOString().slice(11, 19)}] ${req.method} ${path.slice(0, 120)}`);
 
     // Health
     if (req.method === 'GET' && path === '/health') {
@@ -182,7 +200,7 @@ function createApp(deps = {}) {
       return configureHtml ? sendHtml(res, 200, configureHtml) : sendHtml(res, 500, 'Missing configure.html');
     }
 
-    // Token generálás
+    // Token generÄ‚Ë‡lÄ‚Ë‡s
     if (req.method === 'POST' && path === '/api/config-token') {
       const raw = await readBody(req);
       const p   = new URLSearchParams(raw);
@@ -203,7 +221,7 @@ function createApp(deps = {}) {
       return sendJson(res, 200, SETUP_MANIFEST);
     }
 
-    // Konfigurált manifest
+    // KonfigurÄ‚Ë‡lt manifest
     const manifestM = path.match(/^\/([^/]+)\/manifest\.json$/);
     if (req.method === 'GET' && manifestM) {
       try {
@@ -215,7 +233,7 @@ function createApp(deps = {}) {
       }
     }
 
-    // Stream – konfig nélkül
+    // Stream Ă˘â‚¬â€ś konfig nÄ‚Â©lkÄ‚Ä˝l
     if (req.method === 'GET' && path.match(/^\/stream\/[^/]+\/[^/.]+\.json$/)) {
       return sendJson(res, 200, { streams: [] });
     }
@@ -241,40 +259,25 @@ function createApp(deps = {}) {
           return res.end();
         }
 
-        // Kiválasztás keresése
+        // HEAD probe should not have side effects (no addTorrent / no polling).
+        if (req.method === 'HEAD') {
+          res.statusCode = 204;
+          return res.end();
+        }
+
+        // KivÄ‚Ë‡lasztÄ‚Ë‡s keresÄ‚Â©se
         const sel = selections.get(selKey);
         if (!sel || sel.expiresAt <= Date.now() || sel.token !== token) {
-          return sendJson(res, 404, { error: 'Kiválasztás nem található vagy lejárt' });
+          return sendJson(res, 404, { error: 'KivÄ‚Ë‡lasztÄ‚Ë‡s nem talÄ‚Ë‡lhatÄ‚Ĺ‚ vagy lejÄ‚Ë‡rt' });
         }
 
         const magnet   = normalizeMagnet(sel.magnet);
         const infoHash = String(sel.infoHash || extractHash(magnet) || '').toLowerCase();
-        if (!magnet || !infoHash) return sendJson(res, 422, { error: 'Érvénytelen magnet/infoHash' });
+        if (!magnet || !infoHash) return sendJson(res, 422, { error: 'Ä‚â€°rvÄ‚Â©nytelen magnet/infoHash' });
+        logInfo(`[RESOLVE] selected hash=${infoHash.slice(0, 8)}... selKey=${selKey}`);
+        debugErr('resolve-selected', { selKey, infoHash, magnetPrefix: magnet.slice(0, 80) });
 
-        // Cache státusz frissítése
-        let isCached = sel.cached;
-        try {
-          const map = await withTimeout(_checkCached({ apiKey: creds.torboxApiKey, infoHashes: [infoHash] }), 1500);
-          if (map.has(infoHash)) isCached = Boolean(map.get(infoHash));
-        } catch { /* ignore */ }
-
-        console.log(`[RESOLVE] hash=${infoHash.slice(0, 8)}... isCached=${isCached}`);
-
-        // UNCACHED: egyből hozzáadjuk a TorBox queue-hoz, majd 409
-        if (isCached === false) {
-          try {
-            await _addTorrent({ apiKey: creds.torboxApiKey, magnet });
-            console.log('[RESOLVE] Uncached → TorBox queue-ba rakva');
-          } catch (e) {
-            const msg = String(e?.message || '').toLowerCase();
-            if (!msg.includes('already') && !msg.includes('exist')) {
-              console.log(`[RESOLVE] addTorrent hiba: ${e.message}`);
-            }
-          }
-          res.setHeader('retry-after', '60');
-          return sendJson(res, 409, { error: 'Torrent hozzáadva. Töltés után elérhető.' });
-        }
-
+        // Torrentio-like: always let resolveLink do find-or-create.
         // CACHED / ISMERETLEN: resolveLink
         let promise = resolveInFlight.get(resolveKey);
         if (!promise) {
@@ -305,12 +308,12 @@ function createApp(deps = {}) {
         return res.end();
 
       } catch (e) {
-        console.log(`[RESOLVE] Hiba: ${e.message} (code=${e.code})`);
+        logError('[RESOLVE] Hiba', e);
         if (e.code === 'TORBOX_NOT_READY') {
           res.setHeader('retry-after', '30');
-          return sendJson(res, 409, { error: 'TorBox még nem kész. Próbáld újra.' });
+          return sendJson(res, 409, { error: 'TorBox mÄ‚Â©g nem kÄ‚Â©sz. PrÄ‚Ĺ‚bÄ‚Ë‡ld Ä‚Ĺźjra.' });
         }
-        return sendJson(res, 502, { error: e.message || 'Feloldás sikertelen' });
+        return sendJson(res, 502, { error: e.message || 'FeloldÄ‚Ë‡s sikertelen' });
       }
     }
 
@@ -326,10 +329,10 @@ function createApp(deps = {}) {
         const creds = decodeConfig(token);
         if (!creds.torboxApiKey) return sendJson(res, 200, { streams: [] });
 
-        // nCore keresés
+        // nCore kereses
         const results = await searchClient({ username: creds.username, password: creds.password, query: parsedId.raw });
 
-        // TorBox mylist (rövid cache)
+        // TorBox mylist (rÄ‚Â¶vid cache)
         let myListByHash = new Map();
         try {
           const key   = shortHash(creds.torboxApiKey);
@@ -346,15 +349,16 @@ function createApp(deps = {}) {
             if (/^[a-f0-9]{40}$/.test(h)) myListByHash.set(h, t);
           }
         } catch { /* ignore */ }
-
-        // TorBox globális cache ellenőrzés (top 30)
+        // TorBox global cache check (top 30).
         let cachedMap = new Map();
-        try {
-          const hashes = results.slice(0, 30)
-            .map(r => String(r.infoHash || extractHash(normalizeMagnet(r.magnet)) || '').toLowerCase())
-            .filter(Boolean);
-          cachedMap = await withTimeout(_checkCached({ apiKey: creds.torboxApiKey, infoHashes: hashes }), 2000);
-        } catch { /* ignore */ }
+        if (ENABLE_STREAM_CACHE_PRECHECK) {
+          try {
+            const hashes = results.slice(0, 30)
+              .map(r => String(r.infoHash || extractHash(normalizeMagnet(r.magnet)) || '').toLowerCase())
+              .filter(Boolean);
+            cachedMap = await withTimeout(_checkCached({ apiKey: creds.torboxApiKey, infoHashes: hashes }), 1500);
+          } catch { /* ignore */ }
+        }
 
         const origin   = getOrigin(req);
         const basePath = parseBasePath(process.env.APP_BASE_PATH || '');
@@ -369,10 +373,10 @@ function createApp(deps = {}) {
           const isReady    = inMyList ? isTorrentReady(inMyList) : false;
           const globalCached = cachedMap.get(infoHash) ?? null;
 
-          // cached: true=kész, false=töltődik vagy uncached, null=ismeretlen
+          // cached: true=kÄ‚Â©sz, false=tÄ‚Â¶ltÄąâ€dik vagy uncached, null=ismeretlen
           let cached;
           if (isReady)                   cached = true;
-          else if (inMyList)             cached = false;  // listában van de töltődik
+          else if (inMyList)             cached = false;  // listÄ‚Ë‡ban van de tÄ‚Â¶ltÄąâ€dik
           else if (globalCached != null) cached = globalCached;
           else                           cached = null;
 
@@ -385,6 +389,7 @@ function createApp(deps = {}) {
             cached,
             expiresAt: Date.now() + SELECTION_TTL,
           });
+          debugErr('stream-selection-created', { selKey, infoHash, title: item.title || '' });
 
           const quality = inferQuality(item.title);
           const size    = formatSize(item.sizeBytes);
@@ -397,9 +402,9 @@ function createApp(deps = {}) {
             tag        = `[${st.toUpperCase()}${pct ? ` ${pct}%` : ''}]`;
             statusLine = `TorBox: ${st}${pct ? ` ${pct}%` : ''}`;
           } else if (cached === true) {
-            tag = '[CACHED]'; statusLine = 'TorBox: Cached ⚡';
+            tag = '[CACHED]'; statusLine = 'TorBox: Cached';
           } else if (cached === false) {
-            tag = '[UNCACHED]'; statusLine = 'TorBox: Uncached – queue-ba kerül';
+            tag = '[UNCACHED]'; statusLine = 'TorBox: Uncached';
           } else {
             tag = '[?]'; statusLine = 'TorBox: ?';
           }
@@ -423,7 +428,7 @@ function createApp(deps = {}) {
         return sendJson(res, 200, { streams });
 
       } catch (e) {
-        console.log(`[STREAM] Hiba: ${e.message}`);
+        logError('[STREAM] Hiba', e);
         return sendJson(res, 200, { streams: [] });
       }
     }
@@ -433,3 +438,7 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate: MANIFEST };
+
+
+
+

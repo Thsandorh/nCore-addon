@@ -2,6 +2,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { createApp } = require('./api/app');
+let logInfo = (...args) => console.log(...args);
+let logError = (...args) => console.error(...args);
+try {
+  ({ logInfo, logError } = require('./lib/logger')); // optional in older deployments
+} catch {
+  // Fallback to console if logger module is not deployed yet.
+}
 
 function normalizeBasePath(value) {
   if (!value) return '';
@@ -46,6 +53,7 @@ const server = http.createServer((req, res) => {
 
   req.url = rewrittenUrl;
   Promise.resolve(app(req, res)).catch((error) => {
+    logError('http-request-failed', error);
     if (res.headersSent) return;
     res.statusCode = 500;
     res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -57,9 +65,17 @@ const server = http.createServer((req, res) => {
   const port = Number(process.env.PORT || 3000);
   if (!server.listening) {
   server.listen(port, () => {
-    console.log(`nCore addon listening on :${port}`);
+    logInfo(`nCore addon listening on :${port}`);
   });
   }
 }
+
+process.on('unhandledRejection', (reason) => {
+  logError('unhandled-rejection', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logError('uncaught-exception', error);
+});
 
 module.exports = { app, server, normalizeBasePath, rewriteUrlForBasePath };

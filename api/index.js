@@ -2,6 +2,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { createApp } = require('./app');
+let logInfo = (...args) => console.log(...args);
+let logError = (...args) => console.error(...args);
+try {
+  ({ logInfo, logError } = require('../lib/logger')); // optional in older deployments
+} catch {
+  // Fallback to console if logger module is not deployed yet.
+}
 
 function normalizeBasePath(value) {
   if (!value) return '';
@@ -39,9 +46,15 @@ if (require.main === module) {
   const port = Number(process.env.PORT || 3000);
   http.createServer((req, res) => {
     req.url = rewriteUrlForBasePath(req.url, basePath);
-    return app(req, res);
+    return Promise.resolve(app(req, res)).catch((error) => {
+      logError('http-request-failed', error);
+      if (res.headersSent) return;
+      res.statusCode = 500;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: error.message || 'Internal server error' }));
+    });
   }).listen(port, () => {
-    console.log(`nCore addon listening on :${port}`);
+    logInfo(`nCore addon listening on :${port}`);
   });
 }
 

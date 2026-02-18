@@ -9,6 +9,7 @@
     "test": "node test\\api.test.js && node test\\config.test.js"
   },
   "dependencies": {
+    "@ctrl/video-filename-parser": "^5.0.0",
     "undici": "^5.28.4"
   },
   "engines": {
