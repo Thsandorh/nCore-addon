@@ -191,7 +191,11 @@ function createApp(deps = {}) {
     logInfo(`[${new Date().toISOString().slice(11, 19)}] ${req.method} ${path.slice(0, 120)}`);
 
     // Health
-    if (req.method === 'GET' && path === '/health') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/health') {
+      if (req.method === 'HEAD') {
+        res.statusCode = 200;
+        return res.end();
+      }
       return sendJson(res, 200, { ok: true });
     }
 
@@ -217,15 +221,23 @@ function createApp(deps = {}) {
     }
 
     // Setup manifest
-    if (req.method === 'GET' && path === '/manifest.json') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/manifest.json') {
+      if (req.method === 'HEAD') {
+        res.statusCode = 200;
+        return res.end();
+      }
       return sendJson(res, 200, SETUP_MANIFEST);
     }
 
     // KonfigurÄ‚Ë‡lt manifest
     const manifestM = path.match(/^\/([^/]+)\/manifest\.json$/);
-    if (req.method === 'GET' && manifestM) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && manifestM) {
       try {
         decodeConfig(manifestM[1]);
+        if (req.method === 'HEAD') {
+          res.statusCode = 200;
+          return res.end();
+        }
         const suffix = crypto.createHash('sha1').update(manifestM[1]).digest('hex').slice(0, 12);
         return sendJson(res, 200, { ...MANIFEST, id: `community.ncore.web.${suffix}` });
       } catch (e) {
@@ -438,7 +450,6 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate: MANIFEST };
-
 
 
 
