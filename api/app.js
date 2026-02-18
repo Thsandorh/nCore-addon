@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const crypto = require('node:crypto');
 const { encodeConfig, decodeConfig } = require('../lib/config');
@@ -39,19 +39,19 @@ const SETUP_MANIFEST = {
   ...MANIFEST,
   id: 'community.ncore.web.setup',
   name: 'nCore Web Addon (Setup)',
-  description: 'Nyisd meg a /configure oldalt a beÄ‚Ë‡llÄ‚Â­tÄ‚Ë‡shoz.',
+  description: 'Open /configure to complete setup.',
   resources: [],
   types: [],
 };
 
 // ---------------------------------------------------------------------------
-// Cache-ek (folyamat-szintÄąÂ± memÄ‚Ĺ‚ria)
+// Caches (process-level memory)
 // ---------------------------------------------------------------------------
 
-const resolveCache    = new Map(); // resolveKey  Ă˘â€ â€™ { url, expiresAt }
-const resolveInFlight = new Map(); // resolveKey  Ă˘â€ â€™ Promise<string>
-const selections      = new Map(); // selectionKey Ă˘â€ â€™ adatok
-const myListCache     = new Map(); // apiKeyHash  Ă˘â€ â€™ { list, expiresAt }
+const resolveCache    = new Map(); // resolveKey -> { url, expiresAt }
+const resolveInFlight = new Map(); // resolveKey -> Promise<string>
+const selections      = new Map(); // selectionKey -> selection data
+const myListCache     = new Map(); // apiKeyHash -> { list, expiresAt }
 
 const RESOLVE_TTL   = 20 * 60 * 1000;
 const SELECTION_TTL = 90 * 60 * 1000;
@@ -73,20 +73,28 @@ function pruneCache() {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP segÄ‚Â©dek
+// HTTP helpers
 // ---------------------------------------------------------------------------
 
 function withTimeout(p, ms) {
   return Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error('timeout')), ms))]);
 }
 
+function setCorsHeaders(res) {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('access-control-allow-headers', '*');
+}
+
 function sendJson(res, status, body) {
+  setCorsHeaders(res);
   res.statusCode = status;
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(body));
 }
 
 function sendHtml(res, status, body) {
+  setCorsHeaders(res);
   res.statusCode = status;
   res.setHeader('content-type', 'text/html; charset=utf-8');
   res.end(body);
@@ -101,7 +109,7 @@ async function readBody(req) {
 }
 
 // ---------------------------------------------------------------------------
-// Kis segÄ‚Â©dek
+// Small helpers
 // ---------------------------------------------------------------------------
 
 function getOrigin(req) {
@@ -190,8 +198,19 @@ function createApp(deps = {}) {
     const path = url.pathname;
     logInfo(`[${new Date().toISOString().slice(11, 19)}] ${req.method} ${path.slice(0, 120)}`);
 
+    if (req.method === 'OPTIONS') {
+      setCorsHeaders(res);
+      res.statusCode = 204;
+      return res.end();
+    }
+
     // Health
-    if (req.method === 'GET' && path === '/health') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/health') {
+      if (req.method === 'HEAD') {
+        setCorsHeaders(res);
+        res.statusCode = 200;
+        return res.end();
+      }
       return sendJson(res, 200, { ok: true });
     }
 
@@ -200,7 +219,7 @@ function createApp(deps = {}) {
       return configureHtml ? sendHtml(res, 200, configureHtml) : sendHtml(res, 500, 'Missing configure.html');
     }
 
-    // Token generÄ‚Ë‡lÄ‚Ë‡s
+    // Token generation
     if (req.method === 'POST' && path === '/api/config-token') {
       const raw = await readBody(req);
       const p   = new URLSearchParams(raw);
@@ -217,15 +236,25 @@ function createApp(deps = {}) {
     }
 
     // Setup manifest
-    if (req.method === 'GET' && path === '/manifest.json') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/manifest.json') {
+      if (req.method === 'HEAD') {
+        setCorsHeaders(res);
+        res.statusCode = 200;
+        return res.end();
+      }
       return sendJson(res, 200, SETUP_MANIFEST);
     }
 
-    // KonfigurÄ‚Ë‡lt manifest
+    // Configured manifest
     const manifestM = path.match(/^\/([^/]+)\/manifest\.json$/);
-    if (req.method === 'GET' && manifestM) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && manifestM) {
       try {
         decodeConfig(manifestM[1]);
+        if (req.method === 'HEAD') {
+          setCorsHeaders(res);
+          res.statusCode = 200;
+          return res.end();
+        }
         const suffix = crypto.createHash('sha1').update(manifestM[1]).digest('hex').slice(0, 12);
         return sendJson(res, 200, { ...MANIFEST, id: `community.ncore.web.${suffix}` });
       } catch (e) {
@@ -233,7 +262,7 @@ function createApp(deps = {}) {
       }
     }
 
-    // Stream Ă˘â‚¬â€ś konfig nÄ‚Â©lkÄ‚Ä˝l
+    // Stream without config
     if (req.method === 'GET' && path.match(/^\/stream\/[^/]+\/[^/.]+\.json$/)) {
       return sendJson(res, 200, { streams: [] });
     }
@@ -249,7 +278,7 @@ function createApp(deps = {}) {
 
       try {
         const creds = decodeConfig(token);
-        if (!creds.torboxApiKey) return sendJson(res, 400, { error: 'Nincs TorBox API kulcs' });
+        if (!creds.torboxApiKey) return sendJson(res, 400, { error: 'Missing TorBox API key' });
 
         // Cache hit
         const hit = resolveCache.get(resolveKey);
@@ -265,20 +294,20 @@ function createApp(deps = {}) {
           return res.end();
         }
 
-        // KivÄ‚Ë‡lasztÄ‚Ë‡s keresÄ‚Â©se
+        // Find selection
         const sel = selections.get(selKey);
         if (!sel || sel.expiresAt <= Date.now() || sel.token !== token) {
-          return sendJson(res, 404, { error: 'KivÄ‚Ë‡lasztÄ‚Ë‡s nem talÄ‚Ë‡lhatÄ‚Ĺ‚ vagy lejÄ‚Ë‡rt' });
+          return sendJson(res, 404, { error: 'Selection not found or expired' });
         }
 
         const magnet   = normalizeMagnet(sel.magnet);
         const infoHash = String(sel.infoHash || extractHash(magnet) || '').toLowerCase();
-        if (!magnet || !infoHash) return sendJson(res, 422, { error: 'Ä‚â€°rvÄ‚Â©nytelen magnet/infoHash' });
+        if (!magnet || !infoHash) return sendJson(res, 422, { error: 'Invalid magnet/infoHash' });
         logInfo(`[RESOLVE] selected hash=${infoHash.slice(0, 8)}... selKey=${selKey}`);
         debugErr('resolve-selected', { selKey, infoHash, magnetPrefix: magnet.slice(0, 80) });
 
         // Torrentio-like: always let resolveLink do find-or-create.
-        // CACHED / ISMERETLEN: resolveLink
+        // CACHED / UNKNOWN: resolveLink
         let promise = resolveInFlight.get(resolveKey);
         if (!promise) {
           promise = _resolveLink({
@@ -300,7 +329,7 @@ function createApp(deps = {}) {
           resolveInFlight.delete(resolveKey);
         }
 
-        if (!resolvedUrl) return sendJson(res, 502, { error: 'TorBox nem adott vissza URL-t' });
+        if (!resolvedUrl) return sendJson(res, 502, { error: 'TorBox did not return a URL' });
 
         resolveCache.set(resolveKey, { url: resolvedUrl, expiresAt: Date.now() + RESOLVE_TTL });
         res.statusCode = 302;
@@ -308,17 +337,17 @@ function createApp(deps = {}) {
         return res.end();
 
       } catch (e) {
-        logError('[RESOLVE] Hiba', e);
+        logError('[RESOLVE] Error', e);
         if (e.code === 'TORBOX_NOT_READY') {
           res.setHeader('retry-after', '30');
-          return sendJson(res, 409, { error: 'TorBox mÄ‚Â©g nem kÄ‚Â©sz. PrÄ‚Ĺ‚bÄ‚Ë‡ld Ä‚Ĺźjra.' });
+          return sendJson(res, 409, { error: 'TorBox is not ready yet. Try again.' });
         }
-        return sendJson(res, 502, { error: e.message || 'FeloldÄ‚Ë‡s sikertelen' });
+        return sendJson(res, 502, { error: e.message || 'Resolve failed' });
       }
     }
 
     // -----------------------------------------------------------------------
-    // Stream lista
+    // Stream list
     // -----------------------------------------------------------------------
     const streamM = path.match(/^\/([^/]+)\/stream\/([^/]+)\/([^/.]+)\.json$/);
     if (req.method === 'GET' && streamM) {
@@ -329,10 +358,10 @@ function createApp(deps = {}) {
         const creds = decodeConfig(token);
         if (!creds.torboxApiKey) return sendJson(res, 200, { streams: [] });
 
-        // nCore kereses
+        // nCore search
         const results = await searchClient({ username: creds.username, password: creds.password, query: parsedId.raw });
 
-        // TorBox mylist (rÄ‚Â¶vid cache)
+        // TorBox my list (short cache)
         let myListByHash = new Map();
         try {
           const key   = shortHash(creds.torboxApiKey);
@@ -373,10 +402,10 @@ function createApp(deps = {}) {
           const isReady    = inMyList ? isTorrentReady(inMyList) : false;
           const globalCached = cachedMap.get(infoHash) ?? null;
 
-          // cached: true=kÄ‚Â©sz, false=tÄ‚Â¶ltÄąâ€dik vagy uncached, null=ismeretlen
+          // cached: true=ready, false=downloading or uncached, null=unknown
           let cached;
           if (isReady)                   cached = true;
-          else if (inMyList)             cached = false;  // listÄ‚Ë‡ban van de tÄ‚Â¶ltÄąâ€dik
+          else if (inMyList)             cached = false;  // present in list, but still downloading
           else if (globalCached != null) cached = globalCached;
           else                           cached = null;
 
@@ -428,7 +457,7 @@ function createApp(deps = {}) {
         return sendJson(res, 200, { streams });
 
       } catch (e) {
-        logError('[STREAM] Hiba', e);
+        logError('[STREAM] Error', e);
         return sendJson(res, 200, { streams: [] });
       }
     }
@@ -438,7 +467,6 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate: MANIFEST };
-
 
 
 
