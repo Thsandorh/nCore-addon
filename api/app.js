@@ -9,7 +9,12 @@ try {
 } catch {
   // Fallback to console if logger module is not deployed yet.
 }
-const { loginAndSearch } = require('../lib/ncore-client');
+const {
+  loginAndSearch,
+  loginAndFetchTorrentFile,
+  parseTorrentMeta,
+  torrentToMagnet,
+} = require('../lib/ncore-client');
 const {  checkCached,
   getMyTorrents,
   resolveLink,
@@ -271,11 +276,31 @@ function createApp(deps = {}) {
           return sendJson(res, 404, { error: 'KivÄ‚Ë‡lasztÄ‚Ë‡s nem talÄ‚Ë‡lhatÄ‚Ĺ‚ vagy lejÄ‚Ë‡rt' });
         }
 
-        const magnet   = normalizeMagnet(sel.magnet);
-        const infoHash = String(sel.infoHash || extractHash(magnet) || '').toLowerCase();
-        if (!magnet || !infoHash) return sendJson(res, 422, { error: 'Ä‚â€°rvÄ‚Â©nytelen magnet/infoHash' });
+        let magnet = normalizeMagnet(sel.magnet);
+        let infoHash = String(sel.infoHash || extractHash(magnet) || '').toLowerCase();
+        let torrentFile = null;
+        let torrentFileName = String(sel.fileName || '').trim() || null;
+
+        // Fallback: when stream list could not build a magnet, fetch + parse torrent at resolve time.
+        if ((!magnet || !infoHash) && sel.downloadUrl) {
+          try {
+            torrentFile = await loginAndFetchTorrentFile({
+              username: creds.username,
+              password: creds.password,
+              downloadUrl: sel.downloadUrl,
+            });
+            const torrentMeta = parseTorrentMeta(torrentFile);
+            infoHash = String(torrentMeta.infoHash || '').toLowerCase();
+            if (!magnet) magnet = torrentToMagnet(torrentMeta);
+            if (!torrentFileName) torrentFileName = torrentMeta.fileName || null;
+          } catch (err) {
+            debugErr('resolve-torrent-fallback-failed', { selKey, error: err?.message || String(err || '') });
+          }
+        }
+
+        if (!infoHash || (!magnet && !torrentFile)) return sendJson(res, 422, { error: 'Invalid infoHash/torrent source' });
         logInfo(`[RESOLVE] selected hash=${infoHash.slice(0, 8)}... selKey=${selKey}`);
-        debugErr('resolve-selected', { selKey, infoHash, magnetPrefix: magnet.slice(0, 80) });
+        debugErr('resolve-selected', { selKey, infoHash, magnetPrefix: String(magnet || '').slice(0, 80), hasTorrentFile: Boolean(torrentFile) });
 
         // Torrentio-like: always let resolveLink do find-or-create.
         // CACHED / ISMERETLEN: resolveLink
@@ -285,7 +310,9 @@ function createApp(deps = {}) {
             apiKey:        creds.torboxApiKey,
             magnet,
             infoHash,
-            preferredFile: (sel.season && sel.episode) ? null : sel.fileName,
+            torrentFile,
+            torrentFileName,
+            preferredFile: (sel.season && sel.episode) ? null : (sel.fileName || torrentFileName),
             season:        sel.season,
             episode:       sel.episode,
             maxWaitMs:     15000,
@@ -367,11 +394,12 @@ function createApp(deps = {}) {
         for (const item of results.slice(0, 30)) {
           const magnet   = normalizeMagnet(item.magnet);
           const infoHash = String(item.infoHash || extractHash(magnet) || '').toLowerCase();
-          if (!magnet || !infoHash) continue;
+          const downloadUrl = String(item.downloadUrl || '').trim();
+          if (!infoHash && !magnet && !downloadUrl) continue;
 
-          const inMyList   = myListByHash.get(infoHash) || null;
+          const inMyList   = infoHash ? (myListByHash.get(infoHash) || null) : null;
           const isReady    = inMyList ? isTorrentReady(inMyList) : false;
-          const globalCached = cachedMap.get(infoHash) ?? null;
+          const globalCached = infoHash ? (cachedMap.get(infoHash) ?? null) : null;
 
           // cached: true=kÄ‚Â©sz, false=tÄ‚Â¶ltÄąâ€dik vagy uncached, null=ismeretlen
           let cached;
@@ -382,7 +410,7 @@ function createApp(deps = {}) {
 
           const selKey = crypto.randomBytes(9).toString('base64url');
           selections.set(selKey, {
-            token, magnet, infoHash,
+            token, magnet, infoHash, downloadUrl,
             fileName: item.fileName,
             season:   parsedId.season,
             episode:  parsedId.episode,
