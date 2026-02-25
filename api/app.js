@@ -44,7 +44,7 @@ const SETUP_MANIFEST = {
   ...MANIFEST,
   id: 'community.ncore.web.setup',
   name: 'nCore Web Addon (Setup)',
-  description: 'Nyisd meg a /configure oldalt a beÄ‚Ë‡llÄ‚Â­tÄ‚Ë‡shoz.',
+  description: 'Nyisd meg a /configure oldalt a beállításhoz.',
   resources: [],
   types: [],
 };
@@ -85,13 +85,21 @@ function withTimeout(p, ms) {
   return Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error('timeout')), ms))]);
 }
 
+function setCorsHeaders(res) {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('access-control-allow-headers', '*');
+}
+
 function sendJson(res, status, body) {
+  setCorsHeaders(res);
   res.statusCode = status;
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(body));
 }
 
 function sendHtml(res, status, body) {
+  setCorsHeaders(res);
   res.statusCode = status;
   res.setHeader('content-type', 'text/html; charset=utf-8');
   res.end(body);
@@ -195,8 +203,19 @@ function createApp(deps = {}) {
     const path = url.pathname;
     logInfo(`[${new Date().toISOString().slice(11, 19)}] ${req.method} ${path.slice(0, 120)}`);
 
+    if (req.method === 'OPTIONS') {
+      setCorsHeaders(res);
+      res.statusCode = 204;
+      return res.end();
+    }
+
     // Health
-    if (req.method === 'GET' && path === '/health') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/health') {
+      if (req.method === 'HEAD') {
+        setCorsHeaders(res);
+        res.statusCode = 200;
+        return res.end();
+      }
       return sendJson(res, 200, { ok: true });
     }
 
@@ -222,15 +241,25 @@ function createApp(deps = {}) {
     }
 
     // Setup manifest
-    if (req.method === 'GET' && path === '/manifest.json') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/manifest.json') {
+      if (req.method === 'HEAD') {
+        setCorsHeaders(res);
+        res.statusCode = 200;
+        return res.end();
+      }
       return sendJson(res, 200, SETUP_MANIFEST);
     }
 
     // KonfigurÄ‚Ë‡lt manifest
     const manifestM = path.match(/^\/([^/]+)\/manifest\.json$/);
-    if (req.method === 'GET' && manifestM) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && manifestM) {
       try {
         decodeConfig(manifestM[1]);
+        if (req.method === 'HEAD') {
+          setCorsHeaders(res);
+          res.statusCode = 200;
+          return res.end();
+        }
         const suffix = crypto.createHash('sha1').update(manifestM[1]).digest('hex').slice(0, 12);
         return sendJson(res, 200, { ...MANIFEST, id: `community.ncore.web.${suffix}` });
       } catch (e) {
@@ -466,7 +495,6 @@ function createApp(deps = {}) {
 }
 
 module.exports = { createApp, manifestTemplate: MANIFEST };
-
 
 
 
