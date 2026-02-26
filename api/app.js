@@ -44,9 +44,8 @@ const SETUP_MANIFEST = {
   ...MANIFEST,
   id: 'community.ncore.web.setup',
   name: 'nCore Web Addon (Setup)',
-  description: 'Nyisd meg a /configure oldalt a beállításhoz.',
-  resources: [],
-  types: [],
+  description: 'Open /configure to generate your personal manifest URL.',
+  behaviorHints: { configurable: true, configurationRequired: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -220,7 +219,10 @@ function createApp(deps = {}) {
     }
 
     // Configure oldal
-    if (req.method === 'GET' && (path === '/' || path === '/configure')) {
+    if (
+      req.method === 'GET'
+      && (path === '/' || path === '/index.html' || path === '/configure' || path === '/configure/' || path === '/configure/index.html')
+    ) {
       return configureHtml ? sendHtml(res, 200, configureHtml) : sendHtml(res, 500, 'Missing configure.html');
     }
 
@@ -245,8 +247,10 @@ function createApp(deps = {}) {
       if (req.method === 'HEAD') {
         setCorsHeaders(res);
         res.statusCode = 200;
+        res.setHeader('cache-control', 'public, max-age=60');
         return res.end();
       }
+      res.setHeader('cache-control', 'public, max-age=60');
       return sendJson(res, 200, SETUP_MANIFEST);
     }
 
@@ -258,9 +262,11 @@ function createApp(deps = {}) {
         if (req.method === 'HEAD') {
           setCorsHeaders(res);
           res.statusCode = 200;
+          res.setHeader('cache-control', 'public, max-age=60');
           return res.end();
         }
         const suffix = crypto.createHash('sha1').update(manifestM[1]).digest('hex').slice(0, 12);
+        res.setHeader('cache-control', 'public, max-age=60');
         return sendJson(res, 200, { ...MANIFEST, id: `community.ncore.web.${suffix}` });
       } catch (e) {
         return sendJson(res, 400, { error: e.message });
@@ -302,7 +308,7 @@ function createApp(deps = {}) {
         // KivÄ‚Ë‡lasztÄ‚Ë‡s keresÄ‚Â©se
         const sel = selections.get(selKey);
         if (!sel || sel.expiresAt <= Date.now() || sel.token !== token) {
-          return sendJson(res, 404, { error: 'KivÄ‚Ë‡lasztÄ‚Ë‡s nem talÄ‚Ë‡lhatÄ‚Ĺ‚ vagy lejÄ‚Ë‡rt' });
+          return sendJson(res, 404, { error: 'Selection not found or expired' });
         }
 
         let magnet = normalizeMagnet(sel.magnet);
@@ -367,9 +373,9 @@ function createApp(deps = {}) {
         logError('[RESOLVE] Hiba', e);
         if (e.code === 'TORBOX_NOT_READY') {
           res.setHeader('retry-after', '30');
-          return sendJson(res, 409, { error: 'TorBox mÄ‚Â©g nem kÄ‚Â©sz. PrÄ‚Ĺ‚bÄ‚Ë‡ld Ä‚Ĺźjra.' });
+          return sendJson(res, 409, { error: 'TorBox is not ready yet. Please try again.' });
         }
-        return sendJson(res, 502, { error: e.message || 'FeloldÄ‚Ë‡s sikertelen' });
+        return sendJson(res, 502, { error: e.message || 'Resolve failed' });
       }
     }
 
