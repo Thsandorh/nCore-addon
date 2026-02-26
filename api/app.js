@@ -56,10 +56,14 @@ const resolveCache    = new Map(); // resolveKey  Ă˘â€ â€™ { url, exp
 const resolveInFlight = new Map(); // resolveKey  Ă˘â€ â€™ Promise<string>
 const selections      = new Map(); // selectionKey Ă˘â€ â€™ adatok
 const myListCache     = new Map(); // apiKeyHash  Ă˘â€ â€™ { list, expiresAt }
+const streamListCache = new Map(); // streamKey   -> { streams, expiresAt }
 
 const RESOLVE_TTL   = 20 * 60 * 1000;
 const SELECTION_TTL = 90 * 60 * 1000;
 const MYLIST_TTL    =      15 * 1000;
+const STREAM_LIST_TTL_MS = toPositiveInt(process.env.STREAM_LIST_TTL_MS, 15000);
+const STREAM_RESULT_LIMIT = Math.min(toPositiveInt(process.env.STREAM_RESULT_LIMIT, 30), 60);
+const RESOLVE_MAX_WAIT_MS = toPositiveInt(process.env.TORBOX_RESOLVE_MAX_WAIT_MS, 30000);
 const ENABLE_STREAM_CACHE_PRECHECK = String(process.env.ENABLE_STREAM_CACHE_PRECHECK || "true").toLowerCase() === "true";
 const ENABLE_STREAM_MYLIST_PRECHECK = String(process.env.ENABLE_STREAM_MYLIST_PRECHECK || "").toLowerCase() === "true";
 const TORBOX_DEBUG = String(process.env.TORBOX_DEBUG || 'false').toLowerCase() === 'true';
@@ -74,6 +78,7 @@ function pruneCache() {
   for (const [k, v] of resolveCache) if (v.expiresAt <= now) resolveCache.delete(k);
   for (const [k, v] of selections)   if (v.expiresAt <= now) selections.delete(k);
   for (const [k, v] of myListCache)  if (v.expiresAt <= now) myListCache.delete(k);
+  for (const [k, v] of streamListCache) if (v.expiresAt <= now) streamListCache.delete(k);
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +107,13 @@ function sendHtml(res, status, body) {
   res.statusCode = status;
   res.setHeader('content-type', 'text/html; charset=utf-8');
   res.end(body);
+}
+
+function sendRedirect(res, status, location) {
+  setCorsHeaders(res);
+  res.statusCode = status;
+  res.setHeader('location', location);
+  res.end();
 }
 
 async function readBody(req) {
@@ -184,6 +196,23 @@ function shortHash(s) {
   return crypto.createHash('sha1').update(String(s || '')).digest('hex').slice(0, 16);
 }
 
+function toPositiveInt(value, fallback) {
+  const n = Number(value);
+  if (Number.isInteger(n) && n > 0) return n;
+  return fallback;
+}
+
+function buildSelectionKey({ token, parsedIdRaw, infoHash, fileName, downloadUrl, magnet }) {
+  return shortHash([
+    token || '',
+    parsedIdRaw || '',
+    String(infoHash || '').toLowerCase(),
+    String(fileName || '').trim(),
+    String(downloadUrl || '').trim(),
+    String(magnet || '').trim(),
+  ].join('|'));
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -218,11 +247,26 @@ function createApp(deps = {}) {
       return sendJson(res, 200, { ok: true });
     }
 
+    // Root -> configure redirect
+    if (
+      (req.method === 'GET' || req.method === 'HEAD')
+      && (path === '/' || path === '/index.html')
+    ) {
+      const basePath = parseBasePath(process.env.APP_BASE_PATH || '');
+      return sendRedirect(res, 302, `${basePath}/configure${url.search || ''}`);
+    }
+
     // Configure oldal
     if (
-      req.method === 'GET'
-      && (path === '/' || path === '/index.html' || path === '/configure' || path === '/configure/' || path === '/configure/index.html')
+      (req.method === 'GET' || req.method === 'HEAD')
+      && (path === '/configure' || path === '/configure/' || path === '/configure/index.html')
     ) {
+      if (req.method === 'HEAD') {
+        setCorsHeaders(res);
+        res.statusCode = 200;
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        return res.end();
+      }
       return configureHtml ? sendHtml(res, 200, configureHtml) : sendHtml(res, 500, 'Missing configure.html');
     }
 
@@ -350,7 +394,7 @@ function createApp(deps = {}) {
             preferredFile: (sel.season && sel.episode) ? null : (sel.fileName || torrentFileName),
             season:        sel.season,
             episode:       sel.episode,
-            maxWaitMs:     15000,
+            maxWaitMs:     RESOLVE_MAX_WAIT_MS,
           });
           resolveInFlight.set(resolveKey, promise);
         }
@@ -385,11 +429,25 @@ function createApp(deps = {}) {
     const streamM = path.match(/^\/([^/]+)\/stream\/([^/]+)\/([^/.]+)\.json$/);
     if (req.method === 'GET' && streamM) {
       const token    = streamM[1];
+      const streamType = streamM[2];
       const parsedId = parseStreamId(streamM[3]);
 
       try {
         const creds = decodeConfig(token);
         if (!creds.torboxApiKey) return sendJson(res, 200, { streams: [] });
+        const origin   = getOrigin(req);
+        const basePath = parseBasePath(process.env.APP_BASE_PATH || '');
+        const streamCacheKey = [
+          token,
+          streamType,
+          parsedId.raw,
+          origin,
+          basePath,
+        ].join('|');
+        const streamCacheHit = streamListCache.get(streamCacheKey);
+        if (streamCacheHit?.expiresAt > Date.now() && Array.isArray(streamCacheHit.streams)) {
+          return sendJson(res, 200, { streams: streamCacheHit.streams });
+        }
 
         // nCore kereses
         const results = await searchClient({ username: creds.username, password: creds.password, query: parsedId.raw });
@@ -415,18 +473,16 @@ function createApp(deps = {}) {
         let cachedMap = new Map();
         if (ENABLE_STREAM_CACHE_PRECHECK) {
           try {
-            const hashes = results.slice(0, 30)
+            const hashes = results.slice(0, STREAM_RESULT_LIMIT)
               .map(r => String(r.infoHash || extractHash(normalizeMagnet(r.magnet)) || '').toLowerCase())
               .filter(Boolean);
             cachedMap = await withTimeout(_checkCached({ apiKey: creds.torboxApiKey, infoHashes: hashes }), 1500);
           } catch { /* ignore */ }
         }
 
-        const origin   = getOrigin(req);
-        const basePath = parseBasePath(process.env.APP_BASE_PATH || '');
         const streams  = [];
 
-        for (const item of results.slice(0, 30)) {
+        for (const item of results.slice(0, STREAM_RESULT_LIMIT)) {
           const magnet   = normalizeMagnet(item.magnet);
           const infoHash = String(item.infoHash || extractHash(magnet) || '').toLowerCase();
           const downloadUrl = String(item.downloadUrl || '').trim();
@@ -443,7 +499,14 @@ function createApp(deps = {}) {
           else if (globalCached != null) cached = globalCached;
           else                           cached = null;
 
-          const selKey = crypto.randomBytes(9).toString('base64url');
+          const selKey = buildSelectionKey({
+            token,
+            parsedIdRaw: parsedId.raw,
+            infoHash,
+            fileName: item.fileName,
+            downloadUrl,
+            magnet,
+          });
           selections.set(selKey, {
             token, magnet, infoHash, downloadUrl,
             fileName: item.fileName,
@@ -487,6 +550,11 @@ function createApp(deps = {}) {
             },
           });
         }
+
+        streamListCache.set(streamCacheKey, {
+          streams,
+          expiresAt: Date.now() + STREAM_LIST_TTL_MS,
+        });
 
         return sendJson(res, 200, { streams });
 

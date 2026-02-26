@@ -299,6 +299,22 @@
       return `stremio://${manifestUrl.replace(/^https?:\/\//, '')}`;
     }
 
+    async function parseJsonResponse(response, fallbackMessage) {
+      const raw = await response.text();
+      let data = null;
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        const snippet = String(raw || '').trim().slice(0, 120);
+        const preview = snippet ? ` (${snippet})` : '';
+        throw new Error(`${fallbackMessage} [HTTP ${response.status}]${preview}`);
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || `${fallbackMessage} [HTTP ${response.status}]`);
+      }
+      return data;
+    }
+
     async function copyManifest() {
       if (!latestManifestUrl) return;
       try {
@@ -341,11 +357,7 @@
           headers: { 'content-type': 'application/x-www-form-urlencoded' },
           body,
         });
-
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || 'Manifest generálás sikertelen.');
-        }
+        const data = await parseJsonResponse(response, 'Manifest generálás sikertelen.');
 
         latestManifestUrl = `${location.origin}${basePath}/${data.token}/manifest.json`;
         manifestUrlEl.textContent = latestManifestUrl;
