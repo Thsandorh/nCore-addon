@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const crypto = require('node:crypto');
 const { encodeConfig, decodeConfig } = require('../lib/config');
@@ -360,8 +360,13 @@ function createApp(deps = {}) {
         let torrentFile = null;
         let torrentFileName = String(sel.fileName || '').trim() || null;
 
-        // Fallback: when stream list could not build a magnet, fetch + parse torrent at resolve time.
-        if ((!magnet || !infoHash) && sel.downloadUrl) {
+        // Always prefer the real .torrent file over a magnet-only add when we can fetch one.
+        // TorBox seems to announce more reliably to nCore's private tracker (and therefore
+        // reports real seeders instead of just DHT/PEX peers) when it receives the actual
+        // .torrent file -- the same thing that happens with a manual "Add Download" in TorBox --
+        // rather than a magnet link built with tr= params. Previously this fetch only ran as a
+        // fallback when the magnet/infoHash were missing, so most resolves never sent the file.
+        if (sel.downloadUrl) {
           try {
             torrentFile = await loginAndFetchTorrentFile({
               username: creds.username,
@@ -369,11 +374,12 @@ function createApp(deps = {}) {
               downloadUrl: sel.downloadUrl,
             });
             const torrentMeta = parseTorrentMeta(torrentFile);
-            infoHash = String(torrentMeta.infoHash || '').toLowerCase();
+            infoHash = String(torrentMeta.infoHash || infoHash || '').toLowerCase();
             if (!magnet) magnet = torrentToMagnet(torrentMeta);
             if (!torrentFileName) torrentFileName = torrentMeta.fileName || null;
           } catch (err) {
-            debugErr('resolve-torrent-fallback-failed', { selKey, error: err?.message || String(err || '') });
+            debugErr('resolve-torrent-fetch-failed', { selKey, error: err?.message || String(err || '') });
+            // Fall back to whatever magnet was already built during the stream-list stage.
           }
         }
 
